@@ -12,17 +12,13 @@ This project aims to make Philippine electricity reserve market pricing more tra
 ## Pipeline Overview
 **GitHub Actions (scheduled) → Python scraper → Google Sheets (storage) → Tableau Public (dashboard refresh)**
 
+## Database Update Schedule
+The live Google Sheet database is updated automatically via GitHub Actions on a daily schedule.
+
+- **Schedule:** `0 23 * * *` (cron)
+- **Runs at:** **23:00 UTC** daily, which is **07:00 Philippine time (PHT)** daily
+- **What updates:** the pipeline appends new rows to the Google Sheet `data` tab and updates the `metadata` timestamp
+
 ## Data Source
 IEMOP Market Data (RTD reserve market clearing price):  
 https://www.iemop.ph/market-data/rtd-reserve-market-clearing-price/
-
-## Google Sheet Structure
-The sheet contains:
-- `data` tab: the live appended dataset used by Tableau
-- `metadata` tab: contains `last_updated_utc` for dashboard timestamp display
-
-## How to Run the Pipeline (Maintainers / Developers)
-### Local run (optional)
-1) Install dependencies:
-```bash
-pip install -r requirements.txt
