@@ -30,6 +30,7 @@ GitHub Actions run proof and workflow file. See live links for to view the outpu
 
 ### How to Test the Pipeline (5 steps)
 1. Go to the repository, Actions tab  
+2. Select the workflow, IPV Pipeline to Google Sheets  
 3. Click Run workflow  
 4. Verify the logs show Appended new rows  
 5. Check the Google Sheet `data` tab for new rows, check `metadata` for updated timestamp
