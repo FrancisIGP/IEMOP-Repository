@@ -1,12 +1,12 @@
-# IPV Dynamic Dashboard — IEMOP Reserve Market (Philippines) *(Work in Progress)*
+# IPV Dynamic Dashboard — IEMOP Reserve Market (Philippines) 
 
 This repository contains a zero-cost, automated data pipeline that collects Philippine IEMOP reserve market clearing price data, appends it to a live Google Sheet, and powers a Tableau Public dashboard that updates without manual file uploads.
 
 ## Live Links
 - **Google Sheet (Live Data Store):** [Open the live sheet](https://docs.google.com/spreadsheets/d/1jyvx2Jh8jGOVpKoJ9tw1auh-thOSdRAVYVpUjhb3kMM/edit?gid=1648105924#gid=1648105924)
-- **Tableau Public Dashboard (Live):** [View the dashboard](https://public.tableau.com/views/IEMOPDashboard/Sheet1?:language=en-US&:sid=&:redirect=auth&:display_count=n&:origin=viz_share_link)
+- **Tableau Public Dashboard (Live) - (Work in Progress)**: [View the dashboard](https://public.tableau.com/views/IEMOPDashboard/Sheet1?:language=en-US&:sid=&:redirect=auth&:display_count=n&:origin=viz_share_link)
 
-## Project Goal (Philippines Context)
+## Project Goal 
 This project aims to make Philippine electricity reserve market pricing more transparent and easier to monitor through a live dashboard, helping users track trends and potential price spikes over time.
 
 ## Pipeline Overview
