@@ -5,10 +5,10 @@ This repository contains a zero-cost, automated data pipeline that collects Phil
 ### Project Goal
 This project aims to make Philippine electricity reserve market pricing more transparent and easier to monitor through a live dashboard, helping users track trends and potential price spikes over time.
 
-## Pipeline Overview
-GitHub Actions, Python scraper, Google Sheets storage, Tableau Public dashboard refresh
+### Pipeline Overview
+GitHub Actions (scheduled) → Python scraper → Google Sheets (storage) → Tableau Public (dashboard refresh)
 
-### Proof of Automation
+## Proof of Automation
 GitHub Actions run proof and workflow file. See live links for to view the output.
 
 ![GitHub Actions run success](assets/actions_run_success.png)
