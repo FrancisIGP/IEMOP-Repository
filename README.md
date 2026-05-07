@@ -28,7 +28,7 @@ The following sequence outlines the end-to-end architecture for synchronizing li
 
 **GitHub Actions (scheduled) → Python scraper → Google Sheets (storage) → Tableau Public (dashboard refresh)**
 
-### How to Test the Pipeline (5 steps)
+### How to Test the Pipeline
 1. Go to the repository, Actions tab  
 2. Select the workflow, IPV Pipeline to Google Sheets  
 3. Click Run workflow  
