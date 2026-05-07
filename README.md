@@ -24,6 +24,8 @@ The live Google Sheet database is updated automatically via GitHub Actions on a 
 - What updates, the pipeline appends new rows to the Google Sheet `data` tab and updates the `metadata` timestamp
 
 ## Pipeline Overview
+The following sequence outlines the end-to-end architecture for synchronizing live data with the visualization platform.
+
 GitHub Actions (scheduled) → Python scraper → Google Sheets (storage) → Tableau Public (dashboard refresh)
 
 ### How to Test the Pipeline (5 steps)
@@ -34,7 +36,7 @@ GitHub Actions (scheduled) → Python scraper → Google Sheets (storage) → Ta
 5. Check the Google Sheet `data` tab for new rows, check `metadata` for updated timestamp
 
 ### Proof of Automation
-GitHub Actions run proof and workflow file. See live links for to view the output.
+See the live links to view the live outputs.
 
 ![GitHub Actions run success](assets/actions_run_success.png)
 
