@@ -14,18 +14,18 @@ GitHub Actions run proof and workflow file. See live links for to view the outpu
 ![GitHub Actions run success](assets/actions_run_success.png)
 ![Workflow schedule and steps](assets/workflow_pipeline_yml.png)
 
-### Live Links
-- [Google Sheet (Data Store)](https://docs.google.com/spreadsheets/d/1jyvx2Jh8jGOVpKoJ9tw1auh-thOSdRAVYVpUjhb3kMM/edit?gid=1648105924#gid=1648105924)
-- [Tableau Public Dashboard](https://public.tableau.com/views/IEMOPDashboard/Sheet1?:language=en-US&:sid=&:redirect=auth&:display_count=n&:origin=viz_share_link), Work in Progress
-
-## How to Test the Pipeline (5 steps)
+### How to Test the Pipeline (5 steps)
 1. Go to the repository, Actions tab  
 2. Select the workflow, IPV Pipeline to Google Sheets  
 3. Click Run workflow  
 4. Verify the logs show Appended new rows  
 5. Check the Google Sheet `data` tab for new rows, check `metadata` for updated timestamp
 
-### Database Update Schedule
+### Live Links
+- [Google Sheet (Data Store)](https://docs.google.com/spreadsheets/d/1jyvx2Jh8jGOVpKoJ9tw1auh-thOSdRAVYVpUjhb3kMM/edit?gid=1648105924#gid=1648105924)
+- [Tableau Public Dashboard](https://public.tableau.com/views/IEMOPDashboard/Sheet1?:language=en-US&:sid=&:redirect=auth&:display_count=n&:origin=viz_share_link), Work in Progress
+
+## Database Update Schedule
 The live Google Sheet database is updated automatically via GitHub Actions on a daily schedule.
 
 - Schedule, `0 23 * * *` (cron)
