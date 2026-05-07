@@ -1,4 +1,4 @@
-# IPV Dynamic Dashboard - IEMOP Reserve Market
+# IEMOP Reserve Market, Dynamic Dashboard 
 
 This repository contains a zero-cost, automated data pipeline that collects Philippine IEMOP reserve market clearing price data, appends it to a live Google Sheet, and powers a Tableau Public dashboard that updates without manual file uploads.
 
