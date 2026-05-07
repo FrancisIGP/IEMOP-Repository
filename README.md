@@ -15,9 +15,6 @@ This repository contains a simple data pipeline that downloads reserve market da
 - `data2_processing.ipynb`  
   Loads the combined CSV, performs cleaning/transformations, and generates initial analysis/plots.
 
-- `README.md`  
-  Project overview and instructions.
-
 ## Requirements
 - Python 3.9+ recommended
 - Packages:
