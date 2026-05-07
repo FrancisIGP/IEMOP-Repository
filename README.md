@@ -3,10 +3,10 @@
 This repository powers a zero-cost, automated data pipeline that collects IEMOP reserve market clearing price data (Philippines), writes it to a live Google Sheet, and feeds a deployed Tableau Public dashboard that updates without manual uploads.
 
 ## Live Links
-- **Google Sheet (Live Data Store):** https://docs.google.com/spreadsheets/d/1jyvx2Jh8jGOVpKoJ9tw1auh-thOSdRAVYVpUjhb3kMM/edit?gid=1648105924#gid=1648105924  
-- **Tableau Public Dashboard (Live):** https://public.tableau.com/newWorkbook/bdb956ee-0139-45a8-98c5-d9da21f75879#2
+- **Google Sheet (Live Data Store):** <br>https://docs.google.com/spreadsheets/d/1jyvx2Jh8jGOVpKoJ9tw1auh-thOSdRAVYVpUjhb3kMM/edit?gid=1648105924#gid=1648105924</br>
+- **Tableau Public Dashboard (Live):** <br>https://public.tableau.com/newWorkbook/bdb956ee-0139-45a8-98c5-d9da21f75879#2</br>
 
-## Project Goal (Philippines Context)
+## Project Goal
 The project aims to make Philippine energy market reserve price data easier to monitor through a live dashboard, helping viewers observe trends, spikes, and patterns over time.
 
 ## Pipeline Overview
