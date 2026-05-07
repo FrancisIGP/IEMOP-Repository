@@ -27,7 +27,6 @@ The live Google Sheet database is updated automatically via GitHub Actions on a 
 GitHub Actions run proof and workflow file. See live links for to view the output.
 
 ![GitHub Actions run success](assets/actions_run_success.png)
-![Workflow schedule and steps](assets/workflow_pipeline_yml.png)
 
 ### How to Test the Pipeline (5 steps)
 1. Go to the repository, Actions tab  
