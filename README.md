@@ -5,7 +5,7 @@ This repository contains a zero-cost, automated data pipeline that collects Phil
 ### Project Goal
 This project aims to make Philippine electricity reserve market pricing more transparent and easier to monitor through a live dashboard, helping users track trends and potential price spikes over time.
 
-### Pipeline Overview
+## Pipeline Overview
 GitHub Actions, Python scraper, Google Sheets storage, Tableau Public dashboard refresh
 
 ### Proof of Automation
@@ -18,7 +18,7 @@ GitHub Actions run proof and workflow file. See live links for to view the outpu
 - [Google Sheet (Data Store)](https://docs.google.com/spreadsheets/d/1jyvx2Jh8jGOVpKoJ9tw1auh-thOSdRAVYVpUjhb3kMM/edit?gid=1648105924#gid=1648105924)
 - [Tableau Public Dashboard](https://public.tableau.com/views/IEMOPDashboard/Sheet1?:language=en-US&:sid=&:redirect=auth&:display_count=n&:origin=viz_share_link), Work in Progress
 
-### Database Update Schedule
+## Database Update Schedule
 The live Google Sheet database is updated automatically via GitHub Actions on a daily schedule.
 
 - Schedule, `0 23 * * *` (cron)
