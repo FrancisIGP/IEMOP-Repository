@@ -9,8 +9,8 @@ This project aims to make Philippine electricity reserve market pricing more tra
 **GitHub Actions (scheduled) → Python scraper → Google Sheets (storage) → Tableau Public (dashboard refresh)**
 
 ### Live Links
-- [**Google Sheet (Live Data Store)**](https://docs.google.com/spreadsheets/d/1jyvx2Jh8jGOVpKoJ9tw1auh-thOSdRAVYVpUjhb3kMM/edit?gid=1648105924#gid=1648105924)
-- [**Tableau Public Dashboard (Live)**](https://public.tableau.com/views/IEMOPDashboard/Sheet1?:language=en-US&:sid=&:redirect=auth&:display_count=n&:origin=viz_share_link) → **(Work in Progress)**
+- [**Google Sheet (Data Store)**](https://docs.google.com/spreadsheets/d/1jyvx2Jh8jGOVpKoJ9tw1auh-thOSdRAVYVpUjhb3kMM/edit?gid=1648105924#gid=1648105924)
+- [**Tableau Public Dashboard**](https://public.tableau.com/views/IEMOPDashboard/Sheet1?:language=en-US&:sid=&:redirect=auth&:display_count=n&:origin=viz_share_link) → **(Work in Progress)**
 
 ## Database Update Schedule
 The live Google Sheet database is updated automatically via GitHub Actions on a daily schedule.
