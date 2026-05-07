@@ -26,7 +26,7 @@ The live Google Sheet database is updated automatically via GitHub Actions on a 
 ## Pipeline Overview
 The following sequence outlines the end-to-end architecture for synchronizing live data with the visualization platform.
 
-GitHub Actions (scheduled) → Python scraper → Google Sheets (storage) → Tableau Public (dashboard refresh)
+**GitHub Actions (scheduled) → Python scraper → Google Sheets (storage) → Tableau Public (dashboard refresh)**
 
 ### How to Test the Pipeline (5 steps)
 1. Go to the repository, Actions tab  
