@@ -7,6 +7,7 @@ This project aims to make Philippine electricity reserve market pricing more tra
 
 ### Pipeline Overview
 **GitHub Actions (scheduled) → Python scraper → Google Sheets (storage) → Tableau Public (dashboard refresh)**
+![Automated Data Pipeline](assets/pipeline_diagram.png)
 
 ### Live Links
 - [**Google Sheet (Data Store)**](https://docs.google.com/spreadsheets/d/1jyvx2Jh8jGOVpKoJ9tw1auh-thOSdRAVYVpUjhb3kMM/edit?gid=1648105924#gid=1648105924)
