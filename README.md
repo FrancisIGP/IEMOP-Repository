@@ -28,17 +28,3 @@ The live Google Sheet database is updated automatically via GitHub Actions on a 
 ## Data Source
 IEMOP Market Data (RTD reserve market clearing price)  
 https://www.iemop.ph/market-data/rtd-reserve-market-clearing-price/
-
-## How to Test the Pipeline (GitHub Actions)
-1. Go to the repo, Actions tab  
-2. Select the workflow, IPV Pipeline to Google Sheets  
-3. Click Run workflow  
-4. Verify the logs show Appended new rows  
-5. Check the Google Sheet `data` tab for new rows, check `metadata` for updated timestamp
-
-## How to Run Locally (Optional)
-This is only needed if you want to run the pipeline on your own computer.
-
-1. Install dependencies
-```bash
-pip install -r requirements.txt
