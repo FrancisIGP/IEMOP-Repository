@@ -14,6 +14,7 @@ This project aims to make Philippine electricity reserve market pricing more tra
 
 ### Google Sheet Tab Structure
 - `data`, main live table used by Tableau Public
+  
   - `time_interval` - the date and time of the market interval (timestamp of the reserve price record)
   - `region_name` - grid region where the reserve market price applies (Luzon, Visayas, Mindanao)
   - `commodity_type` - reserve service category (e.g., Dispatchable, Regulating Up, Regulating Down, Contingency)
