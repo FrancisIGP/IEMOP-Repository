@@ -14,7 +14,7 @@ Environment variables (set in GitHub Actions):
 
 import os
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
@@ -165,18 +165,33 @@ def append_new_rows(ws, header, df_new: pd.DataFrame, existing_keys: set) -> int
 
 def update_last_updated(sh):
     ws_meta = sh.worksheet("metadata")
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+    # Build UTC and PHT timestamps
+    utc_ts = datetime.now(timezone.utc)
+    pht_tz = timezone(timedelta(hours=8))
+    pht_ts = utc_ts.astimezone(pht_tz)
+
+    utc_str = utc_ts.strftime("%Y-%m-%d %H:%M:%S")
+    pht_str = pht_ts.strftime("%Y-%m-%d %H:%M:%S")
 
     colA = [x.strip() for x in ws_meta.col_values(1)]
 
-    if "last_updated_utc" in colA:
-        row_idx = colA.index("last_updated_utc") + 1
-        ws_meta.update(range_name=f"B{row_idx}", values=[[ts]])
-        print(f"Updated metadata!B{row_idx} = {ts}")
-    else:
-        ws_meta.update(range_name="A1", values=[["last_updated_utc"]])
-        ws_meta.update(range_name="B1", values=[[ts]])
-        print(f"Initialized metadata!B1 = {ts}")
+    def upsert(label, value):
+        nonlocal colA
+        if label in colA:
+            row_idx = colA.index(label) + 1
+            ws_meta.update(range_name=f"B{row_idx}", values=[[value]])
+        else:
+            next_row = len(colA) + 1
+            ws_meta.update(range_name=f"A{next_row}", values=[[label]])
+            ws_meta.update(range_name=f"B{next_row}", values=[[value]])
+            colA.append(label)
+
+    upsert("last_updated_utc", utc_str)
+    upsert("last_updated_pht", pht_str)
+
+    print(f"Updated last_updated_utc = {utc_str}")
+    print(f"Updated last_updated_pht = {pht_str}")
 
 
 def main():
