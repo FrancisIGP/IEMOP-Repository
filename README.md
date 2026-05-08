@@ -14,7 +14,17 @@ This project aims to make Philippine electricity reserve market pricing more tra
 
 ### Google Sheet Tab Structure
 - `data`, main live table used by Tableau Public
-- `metadata`, contains `last_updated_utc` timestamp updated by the pipeline
+  - `time_interval`, the date and time of the market interval (timestamp of the reserve price record)
+  - `region_name`, grid region where the reserve market price applies (Luzon, Visayas, Mindanao)
+  - `commodity_type`, reserve service category (e.g., Dispatchable, Regulating Up, Regulating Down, Contingency)
+  - `resource_type`, type/classification of the resource providing reserves (as labeled in the source file)
+  - `resource_name`, name or identifier of the unit/resource in the reserve market
+  - `marginal_price`, reserve market clearing price for that interval and resource (numeric value from IEMOP)
+  - `is_battery`, TRUE if the resource name indicates a battery unit, otherwise FALSE
+  - `source`, data publisher, set to IEMOP
+  - `source_url`, the reference page where the data is sourced from
+  - `ingested_at_utc`, UTC timestamp of when the pipeline appended the row to the Google Sheet
+  - `metadata`, contains `last_updated_utc` timestamp updated by the pipeline
 
 ### Database Update Schedule
 The live Google Sheet database is updated automatically via GitHub Actions on a daily schedule.
