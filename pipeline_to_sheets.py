@@ -171,11 +171,11 @@ def update_last_updated(sh):
 
     if "last_updated_utc" in colA:
         row_idx = colA.index("last_updated_utc") + 1
-        ws_meta.update(f"B{row_idx}", ts)
+        ws_meta.update(range_name=f"B{row_idx}", values=[[ts]])
         print(f"Updated metadata!B{row_idx} = {ts}")
     else:
-        ws_meta.update("A1", "last_updated_utc")
-        ws_meta.update("B1", ts)
+        ws_meta.update(range_name="A1", values=[["last_updated_utc"]])
+        ws_meta.update(range_name="B1", values=[[ts]])
         print(f"Initialized metadata!B1 = {ts}")
 
 
