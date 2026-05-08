@@ -53,7 +53,7 @@ See the live links to view the live outputs.
 
 ### Live Links
 - [Google Sheet (Data Store)](https://docs.google.com/spreadsheets/d/1jyvx2Jh8jGOVpKoJ9tw1auh-thOSdRAVYVpUjhb3kMM/edit?gid=1648105924#gid=1648105924)
-- [Tableau Public Dashboard](https://public.tableau.com/views/IEMOPDashboard/Dashboard1?:language=en-US&:sid=&:redirect=auth&:display_count=n&:origin=viz_share_link), Work in Progress
+- [Tableau Public Dashboard](https://public.tableau.com/views/IEMOPDashboard/Dashboard1?:language=en-US&:sid=&:redirect=auth&:display_count=n&:origin=viz_share_link)
 
 ## Data Source
 IEMOP Market Data (RTD reserve market clearing price)  
