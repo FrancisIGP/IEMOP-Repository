@@ -166,15 +166,17 @@ def append_new_rows(ws, header, df_new: pd.DataFrame, existing_keys: set) -> int
 def update_last_updated(sh):
     ws_meta = sh.worksheet("metadata")
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    try:
-        colA = ws_meta.col_values(1)
-        if "last_updated_utc" in colA:
-            row_idx = colA.index("last_updated_utc") + 1
-            ws_meta.update(f"B{row_idx}", ts)
-        else:
-            ws_meta.update("B1", ts)
-    except Exception:
-        pass
+
+    colA = [x.strip() for x in ws_meta.col_values(1)]
+
+    if "last_updated_utc" in colA:
+        row_idx = colA.index("last_updated_utc") + 1
+        ws_meta.update(f"B{row_idx}", ts)
+        print(f"Updated metadata!B{row_idx} = {ts}")
+    else:
+        ws_meta.update("A1", "last_updated_utc")
+        ws_meta.update("B1", ts)
+        print(f"Initialized metadata!B1 = {ts}")
 
 
 def main():
