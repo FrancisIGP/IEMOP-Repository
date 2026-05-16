@@ -29,12 +29,12 @@ jobs:
           GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
         run: |
           python pipeline_to_sheets.py
-
+      
       - name: Run data preparation
         env:
           GSHEET_ID: ${{ secrets.GSHEET_ID }}
           GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
-          RESOURCE_LABELS_GSHEET_ID: "15IeST_wPRmYbnKeCA6Sv5dutYF7dAl-6uB9zuw6URZI"
-          TOP_FUEL_FILTER: "Coal"
+          REFERENCE_GSHEET_ID: "1QtR6jz0-s8tYHdG2s-sKxzBzj0eMS3SAPmQW_bG-5Zo"
+          DATA_TAB: "data"
         run: |
           python data_prep.py
