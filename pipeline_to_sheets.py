@@ -1,27 +1,20 @@
 """
 pipeline_to_sheets.py
 
-Automated pipeline:
-1) Fetch IEMOP reserve market data using download_iemop.fetch_iemop_data()
-2) Clean / standardize
-3) Enrich resources from a reference Google Sheet
-4) Replace resource_name with a human-readable plant label
-5) Add fuel_type and asset_kind (unit / generator / battery)
-6) Append only NEW rows to Google Sheets (based on max_time_interval)
-7) Update metadata timestamps (UTC + PHT) and max_time_interval
+Robust IEMOP -> Google Sheets pipeline
 
-Required environment variables:
-- GSHEET_ID: destination Google Sheet ID
-- GCP_SA_JSON: service account JSON as a single JSON string
-
-Optional environment variables:
-- REFERENCE_SHEET_ID
-- REFERENCE_GID
+What this version fixes:
+- appends based on actual existing rows in the data tab, not only metadata
+- still updates metadata, but metadata no longer blocks appends
+- supports human-readable labels via reference sheet
+- adds fuel_type and asset_kind
+- preserves raw_resource_name for uniqueness
 """
 
 import os
 import json
 import re
+import warnings
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -45,7 +38,7 @@ DATA_HEADERS = [
     "commodity_type",
     "resource_type",
     "raw_resource_name",
-    "resource_name",   # human-readable label
+    "resource_name",   # human-readable display label
     "plant_name",
     "fuel_type",
     "asset_kind",      # unit / generator / battery
@@ -92,6 +85,7 @@ def get_metadata_map(ws_meta):
             v = str(r[1]).strip()
             if k:
                 meta[k] = v
+
     return meta
 
 
@@ -111,8 +105,7 @@ def update_last_updated_and_max_time(sh, max_time_interval_str=None):
     ws_meta = sh.worksheet("metadata")
 
     utc_ts = datetime.now(timezone.utc)
-    pht_tz = timezone(timedelta(hours=8))
-    pht_ts = utc_ts.astimezone(pht_tz)
+    pht_ts = utc_ts.astimezone(timezone(timedelta(hours=8)))
 
     utc_str = utc_ts.strftime("%Y-%m-%d %H:%M:%S")
     pht_str = pht_ts.strftime("%Y-%m-%d %H:%M:%S")
@@ -130,8 +123,7 @@ def update_last_updated_and_max_time(sh, max_time_interval_str=None):
 
 
 def sync_data_headers(ws_data):
-    current = ws_data.row_values(1)
-    current = [str(x).strip() for x in current]
+    current = [str(x).strip() for x in ws_data.row_values(1)]
 
     if not current or all(x == "" for x in current):
         ws_data.update(values=[DATA_HEADERS], range_name="A1")
@@ -158,9 +150,8 @@ def parse_time_interval(series: pd.Series) -> pd.Series:
 
     mask = dt.isna() & s.ne("")
     if mask.any():
-        try:
-            dt.loc[mask] = pd.to_datetime(s.loc[mask], errors="coerce", format="mixed")
-        except TypeError:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
             dt.loc[mask] = pd.to_datetime(s.loc[mask], errors="coerce")
 
     return dt
@@ -204,13 +195,9 @@ def normalize_asset_kind(val, raw_name="", fuel=""):
 
 def infer_asset_kind(raw_resource_name, resource_type, fuel_type, existing_kind=None):
     if pd.notna(existing_kind) and str(existing_kind).strip():
-        normalized = normalize_asset_kind(
-            existing_kind,
-            raw_name=raw_resource_name,
-            fuel=fuel_type,
-        )
-        if normalized:
-            return normalized
+        norm = normalize_asset_kind(existing_kind, raw_resource_name, fuel_type)
+        if norm:
+            return norm
 
     raw = str(raw_resource_name or "").lower()
     rtype = str(resource_type or "").lower()
@@ -239,7 +226,6 @@ def load_reference_mapping(gc) -> pd.DataFrame:
 
     header = [str(x).strip() for x in values[0]]
     rows = values[1:]
-
     df_ref = pd.DataFrame(rows, columns=header)
 
     df_ref = df_ref.loc[
@@ -248,7 +234,6 @@ def load_reference_mapping(gc) -> pd.DataFrame:
 
     raw_col = find_column(df_ref, [
         "Full resource name",
-        "full resource name",
         "resource_name",
         "raw_resource_name",
         "resource",
@@ -257,7 +242,6 @@ def load_reference_mapping(gc) -> pd.DataFrame:
     ])
     plant_col = find_column(df_ref, [
         "Plant name",
-        "plant name",
         "plant_name",
         "plant",
         "resource_label",
@@ -265,16 +249,13 @@ def load_reference_mapping(gc) -> pd.DataFrame:
     ])
     fuel_col = find_column(df_ref, [
         "Fuel",
-        "fuel",
         "fuel_type",
         "fuel type",
         "technology",
     ])
     kind_col = find_column(df_ref, [
         "Unit / generator",
-        "unit / generator",
         "Unit / generator / battery",
-        "unit / generator / battery",
         "unit/generator",
         "unit/generator/battery",
         "asset_kind",
@@ -290,21 +271,9 @@ def load_reference_mapping(gc) -> pd.DataFrame:
 
     out = pd.DataFrame()
     out["raw_resource_name"] = df_ref[raw_col].astype(str).str.strip()
-
-    if plant_col is not None:
-        out["plant_name"] = df_ref[plant_col].astype(str).str.strip()
-    else:
-        out["plant_name"] = out["raw_resource_name"]
-
-    if fuel_col is not None:
-        out["fuel_type"] = df_ref[fuel_col].astype(str).str.strip()
-    else:
-        out["fuel_type"] = ""
-
-    if kind_col is not None:
-        out["asset_kind"] = df_ref[kind_col].astype(str).str.strip()
-    else:
-        out["asset_kind"] = ""
+    out["plant_name"] = df_ref[plant_col].astype(str).str.strip() if plant_col else out["raw_resource_name"]
+    out["fuel_type"] = df_ref[fuel_col].astype(str).str.strip() if fuel_col else ""
+    out["asset_kind"] = df_ref[kind_col].astype(str).str.strip() if kind_col else ""
 
     out["join_key"] = out["raw_resource_name"].map(normalize_key)
     out = out[out["join_key"] != ""].copy()
@@ -332,7 +301,6 @@ def safe_load_reference_mapping(gc) -> Optional[pd.DataFrame]:
 
 def enrich_resources(df: pd.DataFrame, df_ref: Optional[pd.DataFrame]) -> pd.DataFrame:
     df = df.copy()
-
     df["raw_resource_name"] = df["resource_name"].astype(str).str.strip()
 
     if df_ref is not None and not df_ref.empty:
@@ -358,7 +326,6 @@ def enrich_resources(df: pd.DataFrame, df_ref: Optional[pd.DataFrame]) -> pd.Dat
     )
 
     df["resource_name"] = df["plant_name"]
-
     df["is_battery"] = (
         df["asset_kind"].astype(str).str.lower().eq("battery")
         | df["fuel_type"].astype(str).str.contains("battery|bess", case=False, na=False)
@@ -369,8 +336,8 @@ def enrich_resources(df: pd.DataFrame, df_ref: Optional[pd.DataFrame]) -> pd.Dat
 
 
 def clean_iemop(df_raw: pd.DataFrame, gc=None) -> pd.DataFrame:
-    if df_raw.empty:
-        return df_raw
+    if df_raw is None or df_raw.empty:
+        return pd.DataFrame(columns=DATA_HEADERS)
 
     df = df_raw.copy()
     df.columns = [str(c).strip().lower() for c in df.columns]
@@ -388,8 +355,14 @@ def clean_iemop(df_raw: pd.DataFrame, gc=None) -> pd.DataFrame:
         raise ValueError(f"Missing expected columns in IEMOP data: {missing}")
 
     df = df[required].copy()
-
     df["time_interval"] = parse_time_interval(df["time_interval"])
+
+    df["marginal_price"] = (
+        df["marginal_price"]
+        .astype(str)
+        .str.replace(",", "", regex=False)
+        .str.strip()
+    )
     df["marginal_price"] = pd.to_numeric(df["marginal_price"], errors="coerce")
 
     reserve_map = {
@@ -423,27 +396,58 @@ def clean_iemop(df_raw: pd.DataFrame, gc=None) -> pd.DataFrame:
     return df[DATA_HEADERS]
 
 
-def fetch_incremental(last_time_str: Optional[str]):
-    if last_time_str:
-        last_dt = pd.to_datetime(last_time_str, errors="coerce")
-        if not pd.isna(last_dt):
-            start_date = (last_dt - pd.Timedelta(days=2)).strftime("%Y-%m-%d")
-            end_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-            try:
-                return fetch_iemop_data(start_date=start_date, end_date=end_date, verbose=False)
-            except TypeError:
-                pass
-
-            try:
-                return fetch_iemop_data(start_date=start_date, end_date=end_date)
-            except TypeError:
-                pass
+def fetch_recent_window():
+    # Fetch a rolling 14-day window every run.
+    # Deduping against the actual data tab prevents re-appends.
+    end_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    start_date = (datetime.now(timezone.utc) - timedelta(days=14)).strftime("%Y-%m-%d")
 
     try:
-        return fetch_iemop_data(max_days=7, missing_limit=10, verbose=False)
+        return fetch_iemop_data(start_date=start_date, end_date=end_date, verbose=False)
     except TypeError:
-        return fetch_iemop_data()
+        try:
+            return fetch_iemop_data(start_date=start_date, end_date=end_date)
+        except TypeError:
+            return fetch_iemop_data(max_days=14, missing_limit=10, verbose=False)
+
+
+def build_existing_keys(ws_data):
+    values = ws_data.get_all_values()
+    if not values or len(values) <= 1:
+        return set()
+
+    header_row = [str(x).strip() for x in values[0]]
+    idx = {name: i for i, name in enumerate(header_row)}
+
+    time_idx = idx.get("time_interval")
+    comm_idx = idx.get("commodity_type")
+    raw_idx = idx.get("raw_resource_name")
+    name_idx = idx.get("resource_name")
+
+    keys = set()
+
+    if time_idx is None or comm_idx is None:
+        return keys
+
+    for row in values[1:]:
+        if len(row) <= max(time_idx, comm_idx):
+            continue
+
+        time_val = row[time_idx].strip() if time_idx < len(row) else ""
+        comm_val = row[comm_idx].strip() if comm_idx < len(row) else ""
+
+        raw_val = ""
+        if raw_idx is not None and raw_idx < len(row):
+            raw_val = row[raw_idx].strip()
+
+        # backward compatibility for old rows that only had resource_name
+        if not raw_val and name_idx is not None and name_idx < len(row):
+            raw_val = row[name_idx].strip()
+
+        if time_val and raw_val and comm_val:
+            keys.add((time_val, raw_val, comm_val))
+
+    return keys
 
 
 def append_rows_chunked(ws, rows, chunk_size=500):
@@ -463,41 +467,55 @@ def main():
     headers = sync_data_headers(ws_data)
 
     meta = get_metadata_map(ws_meta)
-    last_time_str = meta.get("max_time_interval", "").strip() or None
+    old_max_time = meta.get("max_time_interval", "").strip() or None
+    print("Existing metadata max_time_interval:", old_max_time)
 
-    df_raw = fetch_incremental(last_time_str)
-
+    df_raw = fetch_recent_window()
     if df_raw is None or len(df_raw) == 0:
-        update_last_updated_and_max_time(sh, max_time_interval_str=last_time_str)
-        print("No data returned from fetch_iemop_data().")
+        update_last_updated_and_max_time(sh, max_time_interval_str=old_max_time)
+        print("No rows returned from fetch_iemop_data.")
         return
+
+    print(f"Fetched raw rows: {len(df_raw):,}")
 
     df_clean = clean_iemop(df_raw, gc=gc)
-
-    if last_time_str:
-        last_dt = pd.to_datetime(last_time_str, errors="coerce")
-        if not pd.isna(last_dt):
-            df_clean = df_clean[df_clean["time_interval"] > last_dt].copy()
-
     if df_clean.empty:
-        update_last_updated_and_max_time(sh, max_time_interval_str=last_time_str)
-        print("No new rows to append.")
+        update_last_updated_and_max_time(sh, max_time_interval_str=old_max_time)
+        print("No rows remained after cleaning.")
         return
 
-    max_append = 15000
-    if len(df_clean) > max_append:
-        df_clean = df_clean.tail(max_append).copy()
-        print(f"Warning: limiting append to newest {max_append} rows.")
+    print(f"Clean rows available: {len(df_clean):,}")
+
+    existing_keys = build_existing_keys(ws_data)
+    print(f"Existing keys already in data tab: {len(existing_keys):,}")
 
     df_clean["time_interval"] = df_clean["time_interval"].dt.strftime("%Y-%m-%d %H:%M:%S")
+    df_clean["append_key"] = list(
+        zip(
+            df_clean["time_interval"],
+            df_clean["raw_resource_name"].astype(str),
+            df_clean["commodity_type"].astype(str),
+        )
+    )
+
+    df_to_append = df_clean.loc[~df_clean["append_key"].isin(existing_keys)].copy()
+    print(f"Rows to append after dedupe: {len(df_to_append):,}")
+
+    latest_seen_time = df_clean["time_interval"].max()
+
+    if df_to_append.empty:
+        update_last_updated_and_max_time(sh, max_time_interval_str=latest_seen_time)
+        print("No new rows to append after checking data tab.")
+        return
 
     rows_to_append = []
-    for _, row in df_clean.iterrows():
-        rows_to_append.append([row.get(col, "") for col in headers])
+    for _, row in df_to_append.iterrows():
+        row_dict = row.to_dict()
+        rows_to_append.append([row_dict.get(col, "") for col in headers])
 
     appended = append_rows_chunked(ws_data, rows_to_append, chunk_size=500)
 
-    new_max_time = df_clean["time_interval"].max()
+    new_max_time = df_to_append["time_interval"].max()
     update_last_updated_and_max_time(sh, max_time_interval_str=new_max_time)
 
     print(
