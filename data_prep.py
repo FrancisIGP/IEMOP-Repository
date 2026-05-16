@@ -438,7 +438,7 @@ def prepare_data(df: pd.DataFrame, ref: pd.DataFrame) -> pd.DataFrame:
     merged["fuel"] = merged["fuel"].replace("", pd.NA).fillna("")
     merged["operator_owner"] = merged["operator_owner"].replace("", pd.NA).fillna("")
 
-    # Remove requested columns.
+    # Remove requested old columns.
     merged = merged.drop(
         columns=[
             "resource_type",
@@ -448,20 +448,32 @@ def prepare_data(df: pd.DataFrame, ref: pd.DataFrame) -> pd.DataFrame:
         errors="ignore",
     )
 
+    # Rename enriched fields to final Google Sheet column names.
+    output_rename = {
+        "plant_name": "Plant name",
+        "unit_generator": "unit/generator",
+        "location": "Location",
+        "fuel": "fuel",
+        "operator_owner": "operator/owner",
+    }
+
+    merged = merged.rename(columns=output_rename)
+
+    # Final requested column order.
     preferred_order = [
         "time_interval",
-        "region_name",
-        "commodity_type",
         "resource_name",
-        "plant_name",
-        "unit_generator",
-        "location",
-        "fuel",
-        "operator_owner",
+        "Plant name",
         "marginal_price",
+        "unit/generator",
+        "fuel",
+        "commodity_type",
+        "operator/owner",
+        "region_name",
+        "Location",
+        "ingested_at_utc",
         "source",
         "source_url",
-        "ingested_at_utc",
     ]
 
     existing_preferred = [c for c in preferred_order if c in merged.columns]
@@ -482,27 +494,15 @@ def prepare_data(df: pd.DataFrame, ref: pd.DataFrame) -> pd.DataFrame:
         prepared = prepared.sort_values(sort_cols, na_position="last")
         prepared = prepared.drop(columns=["_sort_time"])
 
-    # Rename only the newly added fields to match the requested labels.
-    output_rename = {
-        "plant_name": "Plant name",
-        "unit_generator": "Unit/Generator",
-        "location": "Location",
-        "fuel": "Fuel",
-        "operator_owner": "Operator/Owner",
-    }
-
-    prepared = prepared.rename(columns=output_rename)
-
     return prepared
-
 
 def build_unmatched_report(prepared: pd.DataFrame) -> pd.DataFrame:
     missing_mask = (
         prepared["Plant name"].astype(str).str.strip().eq("") |
-        prepared["Unit/Generator"].astype(str).str.strip().eq("") |
+        prepared["unit/generator"].astype(str).str.strip().eq("") |
         prepared["Location"].astype(str).str.strip().eq("") |
-        prepared["Fuel"].astype(str).str.strip().eq("") |
-        prepared["Operator/Owner"].astype(str).str.strip().eq("")
+        prepared["fuel"].astype(str).str.strip().eq("") |
+        prepared["operator/owner"].astype(str).str.strip().eq("")
     )
 
     unmatched = (
@@ -513,7 +513,6 @@ def build_unmatched_report(prepared: pd.DataFrame) -> pd.DataFrame:
     )
 
     return unmatched
-
 
 # ============================================================
 # Metadata
