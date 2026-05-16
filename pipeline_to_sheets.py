@@ -4,9 +4,9 @@ pipeline_to_sheets.py
 Automated pipeline:
 1) Fetch IEMOP reserve market data using download_iemop.fetch_iemop_data()
 2) Clean / standardize
-3) Enrich resource metadata from a reference Google Sheet
-4) Replace resource_name with a human-readable label
-5) Preserve raw_resource_name for joins / uniqueness
+3) Enrich resources from a reference Google Sheet
+4) Replace resource_name with a human-readable plant label
+5) Add fuel_type and asset_kind (unit / generator / battery)
 6) Append only NEW rows to Google Sheets (based on max_time_interval)
 7) Update metadata timestamps (UTC + PHT) and max_time_interval
 
@@ -15,14 +15,15 @@ Required environment variables:
 - GCP_SA_JSON: service account JSON as a single JSON string
 
 Optional environment variables:
-- REFERENCE_SHEET_ID: reference Google Sheet ID
-- REFERENCE_GID: worksheet gid inside the reference Google Sheet
+- REFERENCE_SHEET_ID
+- REFERENCE_GID
 """
 
 import os
 import json
 import re
 from datetime import datetime, timezone, timedelta
+from typing import Optional
 
 import pandas as pd
 import gspread
@@ -35,7 +36,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-# Defaults taken from the reference sheet link you shared
+# Defaults from your reference sheet link
 DEFAULT_REFERENCE_SHEET_ID = "1QtR6jz0-s8tYHdG2s-sKxzBzj0eMS3SAPmQW_bG-5Zo"
 DEFAULT_REFERENCE_GID = "1046991677"
 
@@ -45,10 +46,10 @@ DATA_HEADERS = [
     "commodity_type",
     "resource_type",
     "raw_resource_name",
-    "resource_name",      # human-readable label
+    "resource_name",   # human-readable label
     "plant_name",
     "fuel_type",
-    "asset_kind",         # unit / generator / battery
+    "asset_kind",      # unit / generator / battery
     "marginal_price",
     "is_battery",
     "source",
@@ -57,14 +58,12 @@ DATA_HEADERS = [
 ]
 
 
-def connect_gspread():
+def connect_sheet():
+    sheet_id = os.environ["GSHEET_ID"]
     sa_info = json.loads(os.environ["GCP_SA_JSON"])
     creds = Credentials.from_service_account_info(sa_info, scopes=SCOPES)
-    return gspread.authorize(creds)
-
-
-def connect_sheet(gc, sheet_id: str):
-    return gc.open_by_key(sheet_id)
+    gc = gspread.authorize(creds)
+    return gc.open_by_key(sheet_id), gc
 
 
 def worksheet_by_gid(spreadsheet, gid: str):
@@ -81,11 +80,17 @@ def worksheet_by_gid(spreadsheet, gid: str):
 def get_metadata_map(ws_meta):
     vals = ws_meta.get_all_values()
     meta = {}
+
     if not vals:
         return meta
 
-    start_idx = 1 if len(vals[0]) >= 2 and vals[0][0].strip().lower() == "field" else 0
-    for r in vals[start_idx:]:
+    has_header = (
+        len(vals[0]) >= 2
+        and str(vals[0][0]).strip().lower() == "field"
+    )
+    rows = vals[1:] if has_header else vals
+
+    for r in rows:
         if len(r) >= 2:
             k = str(r[0]).strip()
             v = str(r[1]).strip()
@@ -96,13 +101,14 @@ def get_metadata_map(ws_meta):
 
 def upsert_metadata(ws_meta, label, value):
     col_a = [str(x).strip() for x in ws_meta.col_values(1)]
+
     if label in col_a:
         row_idx = col_a.index(label) + 1
-        ws_meta.update(range_name=f"B{row_idx}", values=[[value]])
+        ws_meta.update(values=[[value]], range_name=f"B{row_idx}")
     else:
         next_row = len(col_a) + 1
-        ws_meta.update(range_name=f"A{next_row}", values=[[label]])
-        ws_meta.update(range_name=f"B{next_row}", values=[[value]])
+        ws_meta.update(values=[[label]], range_name=f"A{next_row}")
+        ws_meta.update(values=[[value]], range_name=f"B{next_row}")
 
 
 def update_last_updated_and_max_time(sh, max_time_interval_str=None):
@@ -131,11 +137,11 @@ def sync_data_headers(ws_data):
     current = ws_data.row_values(1)
 
     if not current or all(str(x).strip() == "" for x in current):
-        ws_data.update("A1", [DATA_HEADERS])
+        ws_data.update(values=[DATA_HEADERS], range_name="A1")
         return DATA_HEADERS
 
     if current != DATA_HEADERS:
-        ws_data.update("A1", [DATA_HEADERS])
+        ws_data.update(values=[DATA_HEADERS], range_name="A1")
         print("Updated data sheet headers to the new schema.")
 
     return DATA_HEADERS
@@ -144,14 +150,18 @@ def sync_data_headers(ws_data):
 def parse_time_interval(series: pd.Series) -> pd.Series:
     s = series.astype(str).str.strip()
 
-    dt1 = pd.to_datetime(s, errors="coerce", format="%Y-%m-%d %H:%M:%S")
+    # Try exact format first
+    dt = pd.to_datetime(s, errors="coerce", format="%Y-%m-%d %H:%M:%S")
 
-    mask = dt1.isna() & s.ne("")
+    # Fallback for anything not captured above
+    mask = dt.isna() & s.ne("")
     if mask.any():
-        dt2 = pd.to_datetime(s[mask], errors="coerce")
-        dt1.loc[mask] = dt2
+        try:
+            dt.loc[mask] = pd.to_datetime(s.loc[mask], errors="coerce", format="mixed")
+        except TypeError:
+            dt.loc[mask] = pd.to_datetime(s.loc[mask], errors="coerce")
 
-    return dt1
+    return dt
 
 
 def normalize_key(x: str) -> str:
@@ -176,16 +186,29 @@ def find_column(df: pd.DataFrame, aliases):
     return None
 
 
+def normalize_asset_kind(val, raw_name="", fuel=""):
+    v = str(val).strip().lower()
+    raw = str(raw_name).strip().lower()
+    fuel = str(fuel).strip().lower()
+
+    if "battery" in v or "bess" in v or "battery" in fuel or "bess" in fuel or "_bat" in raw:
+        return "battery"
+    if "unit" in v:
+        return "unit"
+    if "generator" in v or "gen set" in v or "genset" in v or v == "gen":
+        return "generator"
+    return ""
+
+
 def infer_asset_kind(raw_resource_name, resource_type, fuel_type, existing_kind=None):
     if pd.notna(existing_kind) and str(existing_kind).strip():
-        val = str(existing_kind).strip().lower()
-        if "battery" in val or "bess" in val:
-            return "battery"
-        if "generator" in val or val == "gen":
-            return "generator"
-        if "unit" in val:
-            return "unit"
-        return str(existing_kind).strip()
+        normalized = normalize_asset_kind(
+            existing_kind,
+            raw_name=raw_resource_name,
+            fuel=fuel_type
+        )
+        if normalized:
+            return normalized
 
     raw = str(raw_resource_name or "").lower()
     rtype = str(resource_type or "").lower()
@@ -193,12 +216,10 @@ def infer_asset_kind(raw_resource_name, resource_type, fuel_type, existing_kind=
 
     if "_bat" in raw or "battery" in raw or "bess" in raw or "battery" in fuel or "bess" in fuel:
         return "battery"
-
-    if "generator" in rtype or rtype == "gen":
-        return "generator"
-
-    if "unit" in rtype:
+    if "unit" in raw or "unit" in rtype:
         return "unit"
+    if "generator" in raw or "gen set" in raw or "genset" in raw or "generator" in rtype:
+        return "generator"
 
     return "generator"
 
@@ -207,59 +228,63 @@ def load_reference_mapping(gc) -> pd.DataFrame:
     ref_sheet_id = os.environ.get("REFERENCE_SHEET_ID", DEFAULT_REFERENCE_SHEET_ID)
     ref_gid = os.environ.get("REFERENCE_GID", DEFAULT_REFERENCE_GID)
 
-    sh_ref = connect_sheet(gc, ref_sheet_id)
+    sh_ref = gc.open_by_key(ref_sheet_id)
     ws_ref = worksheet_by_gid(sh_ref, ref_gid)
 
-    records = ws_ref.get_all_records()
-    if not records:
+    values = ws_ref.get_all_values()
+    if not values or len(values) < 2:
         raise ValueError("Reference worksheet is empty.")
 
-    df_ref = pd.DataFrame(records)
-    df_ref.columns = [str(c).strip() for c in df_ref.columns]
+    header = [str(x).strip() for x in values[0]]
+    rows = values[1:]
+
+    df_ref = pd.DataFrame(rows, columns=header)
+
+    # Drop fully blank rows
+    df_ref = df_ref.loc[
+        ~(df_ref.apply(lambda r: all(str(v).strip() == "" for v in r), axis=1))
+    ].copy()
 
     raw_col = find_column(df_ref, [
+        "Full resource name",
         "resource_name",
         "raw_resource_name",
         "resource",
-        "resource id",
-        "resource_id",
         "iemop_resource_name",
         "iemop resource name",
-        "unit",
-        "generator",
+        "fullresource name",
     ])
     plant_col = find_column(df_ref, [
+        "Plant name",
         "plant_name",
-        "plant name",
         "plant",
+        "label",
         "resource_label",
         "resource label",
-        "label",
-        "name",
+        "human_readable_label",
     ])
     fuel_col = find_column(df_ref, [
+        "Fuel",
         "fuel_type",
         "fuel type",
         "fuel",
         "technology",
-        "tech",
     ])
     kind_col = find_column(df_ref, [
+        "Unit / generator",
+        "Unit / generator / battery",
+        "unit/generator",
+        "unit/generator/battery",
         "asset_kind",
         "asset kind",
         "type",
-        "resource_kind",
         "resource kind",
-        "unit/generator/battery",
-        "unit_generator_battery",
-        "asset_type",
-        "asset type",
     ])
 
     if raw_col is None:
         raise ValueError(
-            "Could not find a raw resource-name column in the reference sheet. "
-            "Expected something like resource_name / raw_resource_name / resource."
+            f"Could not find a raw resource-name column in the reference sheet. "
+            f"Found columns: {list(df_ref.columns)}"
         )
 
     out = pd.DataFrame()
@@ -281,11 +306,19 @@ def load_reference_mapping(gc) -> pd.DataFrame:
         out["asset_kind"] = ""
 
     out["join_key"] = out["raw_resource_name"].map(normalize_key)
-
     out = out[out["join_key"] != ""].copy()
-    out = out.drop_duplicates(subset=["join_key"], keep="first").reset_index(drop=True)
 
-    return out
+    out["asset_kind"] = out.apply(
+        lambda r: normalize_asset_kind(
+            r["asset_kind"],
+            raw_name=r["raw_resource_name"],
+            fuel=r["fuel_type"],
+        ),
+        axis=1,
+    )
+
+    out = out.drop_duplicates(subset=["join_key"], keep="first").reset_index(drop=True)
+    return out[["join_key", "plant_name", "fuel_type", "asset_kind"]]
 
 
 def enrich_resources(df: pd.DataFrame, df_ref: pd.DataFrame) -> pd.DataFrame:
@@ -295,13 +328,12 @@ def enrich_resources(df: pd.DataFrame, df_ref: pd.DataFrame) -> pd.DataFrame:
     df["join_key"] = df["raw_resource_name"].map(normalize_key)
 
     df = df.merge(
-        df_ref[["join_key", "plant_name", "fuel_type", "asset_kind"]],
+        df_ref,
         on="join_key",
         how="left",
-        suffixes=("", "_ref"),
     )
 
-    df["plant_name"] = df["plant_name"].fillna(df["raw_resource_name"])
+    df["plant_name"] = df["plant_name"].replace("", pd.NA).fillna(df["raw_resource_name"])
     df["fuel_type"] = df["fuel_type"].replace("", pd.NA).fillna("Unknown")
 
     df["asset_kind"] = df.apply(
@@ -314,7 +346,7 @@ def enrich_resources(df: pd.DataFrame, df_ref: pd.DataFrame) -> pd.DataFrame:
         axis=1,
     )
 
-    # This is the human-readable label that replaces the original display name
+    # Replace display name with a human-readable label
     df["resource_name"] = df["plant_name"]
 
     df["is_battery"] = (
@@ -323,8 +355,7 @@ def enrich_resources(df: pd.DataFrame, df_ref: pd.DataFrame) -> pd.DataFrame:
         | df["raw_resource_name"].astype(str).str.contains("_BAT", case=False, na=False)
     )
 
-    df = df.drop(columns=["join_key"])
-    return df
+    return df.drop(columns=["join_key"])
 
 
 def clean_iemop(df_raw: pd.DataFrame, gc=None) -> pd.DataFrame:
@@ -395,11 +426,10 @@ def clean_iemop(df_raw: pd.DataFrame, gc=None) -> pd.DataFrame:
     df["source_url"] = "https://www.iemop.ph/market-data/rtd-reserve-market-clearing-price/"
     df["ingested_at_utc"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
-    df = df[DATA_HEADERS]
-    return df
+    return df[DATA_HEADERS]
 
 
-def fetch_incremental(last_time_str):
+def fetch_incremental(last_time_str: Optional[str]):
     if last_time_str:
         last_dt = pd.to_datetime(last_time_str, errors="coerce")
         if pd.isna(last_dt):
@@ -425,11 +455,7 @@ def append_rows_chunked(ws, rows, chunk_size=500):
 
 
 def main():
-    gc = connect_gspread()
-
-    destination_sheet_id = os.environ["GSHEET_ID"]
-    sh = connect_sheet(gc, destination_sheet_id)
-
+    sh, gc = connect_sheet()
     ws_data = sh.worksheet("data")
     ws_meta = sh.worksheet("metadata")
 
@@ -468,9 +494,11 @@ def main():
     new_max_time = df_clean["time_interval"].max()
     update_last_updated_and_max_time(sh, max_time_interval_str=new_max_time)
 
-    print(f"Fetched rows: {len(df_raw):,}")
-    print(f"Clean new rows: {len(df_clean):,}")
-    print(f"Appended rows: {appended:,}")
+    print(
+        f"Fetched rows: {len(df_raw):,} | "
+        f"Clean new rows: {len(df_clean):,} | "
+        f"Appended: {appended:,}"
+    )
 
 
 if __name__ == "__main__":
