@@ -337,13 +337,10 @@ def get_best_reference_worksheet(reference_sh):
 
 def load_main_data(main_sh) -> pd.DataFrame:
     ws = main_sh.worksheet(DATA_TAB)
-    df = read_worksheet_as_df(ws)
+    values = ws.get_all_values()
 
-    if df.empty:
+    if not values:
         raise ValueError(f"The '{DATA_TAB}' tab is empty.")
-
-    df.columns = [normalize_column_name(c) for c in df.columns]
-    df.columns = make_unique_columns(df.columns)
 
     required = [
         "time_interval",
@@ -352,6 +349,118 @@ def load_main_data(main_sh) -> pd.DataFrame:
         "resource_name",
         "marginal_price",
     ]
+
+    first_row = values[0]
+    normalized_first_row = [normalize_column_name(c) for c in first_row]
+
+    has_valid_header = all(col in normalized_first_row for col in required)
+
+    def normalize_rows_to_width(rows, width):
+        fixed_rows = []
+
+        for row in rows:
+            row = row[:width]
+
+            if len(row) < width:
+                row = row + [""] * (width - len(row))
+
+            fixed_rows.append(row)
+
+        return fixed_rows
+
+    if has_valid_header:
+        print("Valid header row detected in data tab.")
+
+        header = first_row
+        rows = values[1:]
+
+        df = pd.DataFrame(rows, columns=header)
+
+    else:
+        print("WARNING: Header row is missing. Repairing header automatically...")
+
+        col_count = len(first_row)
+
+        # Case 1: already prepared data but header is missing.
+        # Current row pattern:
+        # time_interval, resource_name, Plant name, marginal_price,
+        # unit/generator, fuel, commodity_type, operator/owner,
+        # region_name, Location, source, source_url, ingested_at_utc
+        if col_count == 13:
+            first_row_lower = [str(x).strip().lower() for x in first_row]
+
+            # Detect whether source/source_url/ingested_at_utc are in old order.
+            if (
+                len(first_row_lower) >= 13
+                and first_row_lower[10] == "iemop"
+                and first_row_lower[11].startswith("http")
+            ):
+                header = [
+                    "time_interval",
+                    "resource_name",
+                    "plant_name",
+                    "marginal_price",
+                    "unit_generator",
+                    "fuel",
+                    "commodity_type",
+                    "operator_owner",
+                    "region_name",
+                    "location",
+                    "source",
+                    "source_url",
+                    "ingested_at_utc",
+                ]
+            else:
+                header = [
+                    "time_interval",
+                    "resource_name",
+                    "plant_name",
+                    "marginal_price",
+                    "unit_generator",
+                    "fuel",
+                    "commodity_type",
+                    "operator_owner",
+                    "region_name",
+                    "location",
+                    "ingested_at_utc",
+                    "source",
+                    "source_url",
+                ]
+
+            rows = normalize_rows_to_width(values, len(header))
+            df = pd.DataFrame(rows, columns=header)
+
+        # Case 2: old raw pipeline data but header is missing.
+        elif col_count == 10:
+            header = [
+                "time_interval",
+                "region_name",
+                "commodity_type",
+                "resource_type",
+                "resource_name",
+                "marginal_price",
+                "is_battery",
+                "source",
+                "source_url",
+                "ingested_at_utc",
+            ]
+
+            rows = normalize_rows_to_width(values, len(header))
+            df = pd.DataFrame(rows, columns=header)
+
+        else:
+            raise ValueError(
+                f"Header row is missing and the script could not infer the structure. "
+                f"Found {col_count} columns in the first row: {first_row}"
+            )
+
+    df = df.dropna(how="all")
+    df = df.loc[
+        ~(df.astype(str).apply(lambda row: "".join(row).strip(), axis=1) == "")
+    ]
+
+    df.columns = [normalize_column_name(c) for c in df.columns]
+    df.columns = make_unique_columns(df.columns)
 
     missing = [c for c in required if c not in df.columns]
 
@@ -365,7 +474,6 @@ def load_main_data(main_sh) -> pd.DataFrame:
     df["resource_key"] = df["resource_name"].apply(normalize_resource_name)
 
     return df
-
 
 def load_reference_data(reference_sh) -> pd.DataFrame:
     ws = get_best_reference_worksheet(reference_sh)
