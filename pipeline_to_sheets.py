@@ -2,15 +2,16 @@
 pipeline_to_sheets.py
 
 IEMOP -> Google Sheets pipeline
-- keeps the original working flow from the repo
-- adds resource transformation safely and separately
+- keeps the original simple pipeline flow
+- adds readable resource labels and fuel type
 - appends based on actual existing rows in the data tab
-- metadata is updated after append logic, not instead of it
+- updates metadata only after append logic
 """
 
 import os
 import json
 import re
+import time
 import warnings
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -31,20 +32,20 @@ DEFAULT_REFERENCE_GID = "1046991677"
 
 DATA_HEADERS = [
     "time_interval",
-    "region_name",
-    "commodity_type",
-    "resource_type",
     "raw_resource_name",
     "resource_name",
-    "plant_name",
     "fuel_type",
     "asset_kind",
+    "commodity_type",
+    "region_name",
     "marginal_price",
-    "is_battery",
     "source",
-    "source_url",
     "ingested_at_utc",
+    "source_url",
 ]
+
+MAX_APPEND_PER_RUN = int(os.environ.get("MAX_APPEND_PER_RUN", "8000"))
+APPEND_CHUNK_SIZE = int(os.environ.get("APPEND_CHUNK_SIZE", "2000"))
 
 
 def connect_sheet():
@@ -82,19 +83,35 @@ def get_metadata_map(ws_meta):
             v = str(r[1]).strip()
             if k:
                 meta[k] = v
+
     return meta
 
 
-def upsert_metadata(ws_meta, label, value):
+def batch_update_metadata(ws_meta, updates: dict):
     col_a = [str(x).strip() for x in ws_meta.col_values(1)]
+    requests = []
 
-    if label in col_a:
-        row_idx = col_a.index(label) + 1
-        ws_meta.update(values=[[value]], range_name=f"B{row_idx}")
-    else:
-        next_row = len(col_a) + 1
-        ws_meta.update(values=[[label]], range_name=f"A{next_row}")
-        ws_meta.update(values=[[value]], range_name=f"B{next_row}")
+    for label, value in updates.items():
+        if label in col_a:
+            row_idx = col_a.index(label) + 1
+            requests.append({
+                "range": f"B{row_idx}",
+                "values": [[value]],
+            })
+        else:
+            next_row = len(col_a) + 1
+            requests.append({
+                "range": f"A{next_row}",
+                "values": [[label]],
+            })
+            requests.append({
+                "range": f"B{next_row}",
+                "values": [[value]],
+            })
+            col_a.append(label)
+
+    if requests:
+        ws_meta.batch_update(requests)
 
 
 def update_last_updated_and_max_time(sh, max_time_interval_str=None):
@@ -103,17 +120,17 @@ def update_last_updated_and_max_time(sh, max_time_interval_str=None):
     utc_ts = datetime.now(timezone.utc)
     pht_ts = utc_ts.astimezone(timezone(timedelta(hours=8)))
 
-    utc_str = utc_ts.strftime("%Y-%m-%d %H:%M:%S")
-    pht_str = pht_ts.strftime("%Y-%m-%d %H:%M:%S")
-
-    upsert_metadata(ws_meta, "last_updated_utc", utc_str)
-    upsert_metadata(ws_meta, "last_updated_pht", pht_str)
+    updates = {
+        "last_updated_utc": utc_ts.strftime("%Y-%m-%d %H:%M:%S"),
+        "last_updated_pht": pht_ts.strftime("%Y-%m-%d %H:%M:%S"),
+    }
 
     if max_time_interval_str:
-        upsert_metadata(ws_meta, "max_time_interval", max_time_interval_str)
+        updates["max_time_interval"] = max_time_interval_str
 
-    print(f"Updated last_updated_utc = {utc_str}")
-    print(f"Updated last_updated_pht = {pht_str}")
+    batch_update_metadata(ws_meta, updates)
+
+    print("Metadata updated.")
     if max_time_interval_str:
         print(f"Updated max_time_interval = {max_time_interval_str}")
 
@@ -134,14 +151,13 @@ def ensure_data_headers(ws_data):
 
     if final_headers != existing_headers:
         ws_data.update(values=[final_headers], range_name="A1")
-        print("Updated data sheet headers by appending missing columns.")
+        print("Updated data headers by appending missing columns.")
 
     return final_headers
 
 
 def parse_time_interval(series: pd.Series) -> pd.Series:
     s = series.astype(str).str.strip()
-
     dt = pd.to_datetime(s, errors="coerce", format="%Y-%m-%d %H:%M:%S")
 
     mask = dt.isna() & s.ne("")
@@ -189,21 +205,20 @@ def normalize_asset_kind(val, raw_name="", fuel=""):
     return ""
 
 
-def infer_asset_kind(raw_resource_name, resource_type, fuel_type, existing_kind=None):
+def infer_asset_kind(raw_resource_name, fuel_type, existing_kind=None):
     if pd.notna(existing_kind) and str(existing_kind).strip():
         norm = normalize_asset_kind(existing_kind, raw_resource_name, fuel_type)
         if norm:
             return norm
 
     raw = str(raw_resource_name or "").lower()
-    rtype = str(resource_type or "").lower()
     fuel = str(fuel_type or "").lower()
 
     if "_bat" in raw or "battery" in raw or "bess" in raw or "battery" in fuel or "bess" in fuel:
         return "battery"
-    if "unit" in raw or "unit" in rtype:
+    if "unit" in raw:
         return "unit"
-    if "generator" in raw or "gen set" in raw or "genset" in raw or "generator" in rtype:
+    if "generator" in raw or "gen set" in raw or "genset" in raw:
         return "generator"
 
     return "generator"
@@ -285,6 +300,7 @@ def load_reference_mapping(gc) -> pd.DataFrame:
     )
 
     out = out.drop_duplicates(subset=["join_key"], keep="first").reset_index(drop=True)
+
     return out[["join_key", "plant_name", "fuel_type", "asset_kind"]]
 
 
@@ -302,7 +318,6 @@ def clean_iemop(df_raw: pd.DataFrame) -> pd.DataFrame:
             "time_interval",
             "region_name",
             "commodity_type",
-            "resource_type",
             "resource_name",
             "marginal_price",
         ])
@@ -314,16 +329,14 @@ def clean_iemop(df_raw: pd.DataFrame) -> pd.DataFrame:
         "time_interval",
         "region_name",
         "commodity_type",
-        "resource_type",
-        "marginal_price",
         "resource_name",
+        "marginal_price",
     ]
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"Missing expected columns in IEMOP data: {missing}")
 
     df = df[required].copy()
-
     df["time_interval"] = parse_time_interval(df["time_interval"])
 
     df["marginal_price"] = (
@@ -342,7 +355,6 @@ def clean_iemop(df_raw: pd.DataFrame) -> pd.DataFrame:
     }
     df["commodity_type"] = df["commodity_type"].map(reserve_map).fillna(df["commodity_type"])
     df["commodity_type"] = df["commodity_type"].astype(str).str.title()
-    df["resource_type"] = df["resource_type"].astype(str).str.title()
 
     region_map = {
         "CLUZ": "Luzon",
@@ -381,7 +393,6 @@ def enrich_iemop(df_clean: pd.DataFrame, gc) -> pd.DataFrame:
     df["asset_kind"] = df.apply(
         lambda r: infer_asset_kind(
             raw_resource_name=r.get("raw_resource_name"),
-            resource_type=r.get("resource_type"),
             fuel_type=r.get("fuel_type"),
             existing_kind=r.get("asset_kind"),
         ),
@@ -389,15 +400,9 @@ def enrich_iemop(df_clean: pd.DataFrame, gc) -> pd.DataFrame:
     )
 
     df["resource_name"] = df["plant_name"]
-    df["is_battery"] = (
-        df["asset_kind"].astype(str).str.lower().eq("battery")
-        | df["fuel_type"].astype(str).str.contains("battery|bess", case=False, na=False)
-        | df["raw_resource_name"].astype(str).str.contains("_BAT", case=False, na=False)
-    )
-
     df["source"] = "IEMOP"
-    df["source_url"] = "https://www.iemop.ph/market-data/rtd-reserve-market-clearing-price/"
     df["ingested_at_utc"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    df["source_url"] = "https://www.iemop.ph/market-data/rtd-reserve-market-clearing-price/"
 
     return df[DATA_HEADERS]
 
@@ -453,12 +458,14 @@ def build_existing_keys(ws_data):
     return keys
 
 
-def append_rows_chunked(ws, rows, chunk_size=500):
+def append_rows_chunked(ws, rows, chunk_size=APPEND_CHUNK_SIZE):
     total = 0
     for i in range(0, len(rows), chunk_size):
         batch = rows[i:i + chunk_size]
         ws.append_rows(batch, value_input_option="USER_ENTERED")
         total += len(batch)
+        print(f"Appended batch: {len(batch):,} rows")
+        time.sleep(2)
     return total
 
 
@@ -518,14 +525,19 @@ def main():
         print("No new rows to append after checking existing data tab.")
         return
 
+    if len(df_to_append) > MAX_APPEND_PER_RUN:
+        df_to_append = df_to_append.tail(MAX_APPEND_PER_RUN).copy()
+        print(f"Limiting append to {MAX_APPEND_PER_RUN:,} rows this run to avoid quota issues.")
+
     rows_to_append = []
     for _, row in df_to_append.iterrows():
         row_dict = row.to_dict()
         rows_to_append.append([row_dict.get(col, "") for col in headers])
 
-    appended = append_rows_chunked(ws_data, rows_to_append, chunk_size=500)
+    appended = append_rows_chunked(ws_data, rows_to_append, chunk_size=APPEND_CHUNK_SIZE)
 
     new_max_time = df_to_append["time_interval"].max()
+    time.sleep(3)
     update_last_updated_and_max_time(sh, max_time_interval_str=new_max_time)
 
     print(
