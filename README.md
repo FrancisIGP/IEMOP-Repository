@@ -6,26 +6,41 @@ This repository contains a zero-cost, automated data pipeline that collects Phil
 This project aims to make Philippine electricity reserve market pricing more transparent and easier to monitor through a live dashboard, helping users track trends and potential price spikes over time.
 
 ### Repository Structure
-- `download_iemop.py`, fetches IEMOP RTD reserve market CSVs and exposes `fetch_iemop_data()`
-- `pipeline_to_sheets.py`, runs the end-to-end pipeline and appends new rows to Google Sheets
-- `requirements.txt`, Python dependencies
-- `.github/workflows/pipeline.yml`, GitHub Actions schedule and automation
-- `assets/`, proof screenshots used in the README
+- `download_iemop.py`  
+  Fetches IEMOP RTD reserve market CSV data and exposes the `fetch_iemop_data()` function.
+- `pipeline_to_sheets.py`  
+  Runs the main extraction and loading process. It retrieves new IEMOP data, cleans the raw records, deduplicates existing data, appends new rows to the Google Sheet `data` tab, and updates the `metadata` tab.
+- `data_prep.py`  
+  Runs after `pipeline_to_sheets.py`. It enriches the main `data` tab by matching each `resource_name` with a reference Google Sheet containing meaningful resource labels. It adds plant name, unit/generator, location, fuel type, and operator/owner. It also removes the old `resource_type` and `is_battery` columns.
+- `requirements.txt`  
+  Contains the Python dependencies required by the pipeline.
+- `.github/workflows/pipeline.yml`  
+  Contains the GitHub Actions workflow that automatically runs the pipeline on schedule or through manual trigger.
+- `assets/`  
+  Contains proof screenshots and supporting images used in the README.
 
 ### Google Sheet Tab Structure
-- `data`, main live table used by Tableau Public
-  
-  - `time_interval` - the date and time of the market interval (timestamp of the reserve price record)
-  - `region_name` - grid region where the reserve market price applies (Luzon, Visayas, Mindanao)
-  - `commodity_type` - reserve service category (e.g., Dispatchable, Regulating Up, Regulating Down, Contingency)
-  - `resource_type` - type/classification of the resource providing reserves (as labeled in the source file)
-  - `resource_name` - name or identifier of the unit/resource in the reserve market
-  - `marginal_price` - reserve market clearing price for that interval and resource (numeric value from IEMOP)
-  - `is_battery` - TRUE if the resource name indicates a battery unit, otherwise FALSE
-  - `source` - data publisher, set to IEMOP
-  - `source_url` - the reference page where the data is sourced from
-  - `ingested_at_utc` - UTC timestamp of when the pipeline appended the row to the Google Sheet
-  - `metadata` - contains `last_updated_utc` timestamp updated by the pipeline
+- `data` - main live table used by Tableau Public after the pipeline and data preparation step run.
+  - `time_interval` - the date and time of the market interval, representing the timestamp of the reserve price record.
+  - `region_name` - grid region where the reserve market price applies, such as Luzon, Visayas, or Mindanao.
+  - `commodity_type` - reserve service category, such as Dispatchable, Regulating Up, Regulating Down, or Contingency.
+  - `resource_name` - original IEMOP name or identifier of the unit/resource in the reserve market.
+  - `Plant name` - human-readable plant name matched from the reference Google Sheet.
+  - `Unit/Generator` - unit, generator, or resource classification matched from the reference Google Sheet.
+  - `Location` - location of the plant or resource matched from the reference Google Sheet.
+  - `Fuel` - fuel or energy type of the resource, such as coal, hydro, diesel, geothermal, solar, battery, or natural gas.
+  - `Operator/Owner` - operator or owner of the plant/resource matched from the reference Google Sheet.
+  - `marginal_price` - reserve market clearing price for that interval and resource, using the numeric value from IEMOP.
+  - `source` - data publisher, set to IEMOP.
+  - `source_url` - reference page where the data is sourced from.
+  - `ingested_at_utc` - UTC timestamp of when the pipeline appended the row to the Google Sheet.
+- `metadata` - contains pipeline update information.
+  - `last_updated_utc` - UTC timestamp updated by the main pipeline.
+  - `data_prep_last_updated_utc` - UTC timestamp when `data_prep.py` last enriched the `data` tab.
+  - `data_prep_last_updated_pht` - Philippine time timestamp when `data_prep.py` last enriched the `data` tab.
+  - `data_prep_rows` - number of rows processed by `data_prep.py`.
+  - `data_prep_unmatched_resources` - number of resource names that could not be matched with the reference sheet.
+  - `reference_gsheet_id` - Google Sheet ID of the reference mapping sheet.
 
 ### Database Update Schedule
 The live Google Sheet database is updated automatically via GitHub Actions on a daily schedule.
