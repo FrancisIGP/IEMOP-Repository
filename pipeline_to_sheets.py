@@ -36,7 +36,6 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-# Defaults from your reference sheet link
 DEFAULT_REFERENCE_SHEET_ID = "1QtR6jz0-s8tYHdG2s-sKxzBzj0eMS3SAPmQW_bG-5Zo"
 DEFAULT_REFERENCE_GID = "1046991677"
 
@@ -84,10 +83,7 @@ def get_metadata_map(ws_meta):
     if not vals:
         return meta
 
-    has_header = (
-        len(vals[0]) >= 2
-        and str(vals[0][0]).strip().lower() == "field"
-    )
+    has_header = len(vals[0]) >= 2 and str(vals[0][0]).strip().lower() == "field"
     rows = vals[1:] if has_header else vals
 
     for r in rows:
@@ -135,25 +131,31 @@ def update_last_updated_and_max_time(sh, max_time_interval_str=None):
 
 def sync_data_headers(ws_data):
     current = ws_data.row_values(1)
+    current = [str(x).strip() for x in current]
 
-    if not current or all(str(x).strip() == "" for x in current):
+    if not current or all(x == "" for x in current):
         ws_data.update(values=[DATA_HEADERS], range_name="A1")
         return DATA_HEADERS
 
-    if current != DATA_HEADERS:
-        ws_data.update(values=[DATA_HEADERS], range_name="A1")
-        print("Updated data sheet headers to the new schema.")
+    existing_headers = [x for x in current if x != ""]
+    final_headers = existing_headers.copy()
 
-    return DATA_HEADERS
+    for col in DATA_HEADERS:
+        if col not in final_headers:
+            final_headers.append(col)
+
+    if final_headers != existing_headers:
+        ws_data.update(values=[final_headers], range_name="A1")
+        print("Updated data sheet headers by appending missing columns.")
+
+    return final_headers
 
 
 def parse_time_interval(series: pd.Series) -> pd.Series:
     s = series.astype(str).str.strip()
 
-    # Try exact format first
     dt = pd.to_datetime(s, errors="coerce", format="%Y-%m-%d %H:%M:%S")
 
-    # Fallback for anything not captured above
     mask = dt.isna() & s.ne("")
     if mask.any():
         try:
@@ -205,7 +207,7 @@ def infer_asset_kind(raw_resource_name, resource_type, fuel_type, existing_kind=
         normalized = normalize_asset_kind(
             existing_kind,
             raw_name=raw_resource_name,
-            fuel=fuel_type
+            fuel=fuel_type,
         )
         if normalized:
             return normalized
@@ -240,45 +242,44 @@ def load_reference_mapping(gc) -> pd.DataFrame:
 
     df_ref = pd.DataFrame(rows, columns=header)
 
-    # Drop fully blank rows
     df_ref = df_ref.loc[
         ~(df_ref.apply(lambda r: all(str(v).strip() == "" for v in r), axis=1))
     ].copy()
 
     raw_col = find_column(df_ref, [
         "Full resource name",
+        "full resource name",
         "resource_name",
         "raw_resource_name",
         "resource",
         "iemop_resource_name",
         "iemop resource name",
-        "fullresource name",
     ])
     plant_col = find_column(df_ref, [
         "Plant name",
+        "plant name",
         "plant_name",
         "plant",
-        "label",
         "resource_label",
-        "resource label",
-        "human_readable_label",
+        "label",
     ])
     fuel_col = find_column(df_ref, [
         "Fuel",
+        "fuel",
         "fuel_type",
         "fuel type",
-        "fuel",
         "technology",
     ])
     kind_col = find_column(df_ref, [
         "Unit / generator",
+        "unit / generator",
         "Unit / generator / battery",
+        "unit / generator / battery",
         "unit/generator",
         "unit/generator/battery",
         "asset_kind",
         "asset kind",
         "type",
-        "resource kind",
     ])
 
     if raw_col is None:
@@ -321,17 +322,27 @@ def load_reference_mapping(gc) -> pd.DataFrame:
     return out[["join_key", "plant_name", "fuel_type", "asset_kind"]]
 
 
-def enrich_resources(df: pd.DataFrame, df_ref: pd.DataFrame) -> pd.DataFrame:
+def safe_load_reference_mapping(gc) -> Optional[pd.DataFrame]:
+    try:
+        return load_reference_mapping(gc)
+    except Exception as e:
+        print(f"Warning: reference mapping could not be loaded. Continuing without enrichment. Details: {e}")
+        return None
+
+
+def enrich_resources(df: pd.DataFrame, df_ref: Optional[pd.DataFrame]) -> pd.DataFrame:
     df = df.copy()
 
     df["raw_resource_name"] = df["resource_name"].astype(str).str.strip()
-    df["join_key"] = df["raw_resource_name"].map(normalize_key)
 
-    df = df.merge(
-        df_ref,
-        on="join_key",
-        how="left",
-    )
+    if df_ref is not None and not df_ref.empty:
+        df["join_key"] = df["raw_resource_name"].map(normalize_key)
+        df = df.merge(df_ref, on="join_key", how="left")
+        df = df.drop(columns=["join_key"])
+    else:
+        df["plant_name"] = pd.NA
+        df["fuel_type"] = pd.NA
+        df["asset_kind"] = pd.NA
 
     df["plant_name"] = df["plant_name"].replace("", pd.NA).fillna(df["raw_resource_name"])
     df["fuel_type"] = df["fuel_type"].replace("", pd.NA).fillna("Unknown")
@@ -346,7 +357,6 @@ def enrich_resources(df: pd.DataFrame, df_ref: pd.DataFrame) -> pd.DataFrame:
         axis=1,
     )
 
-    # Replace display name with a human-readable label
     df["resource_name"] = df["plant_name"]
 
     df["is_battery"] = (
@@ -355,7 +365,7 @@ def enrich_resources(df: pd.DataFrame, df_ref: pd.DataFrame) -> pd.DataFrame:
         | df["raw_resource_name"].astype(str).str.contains("_BAT", case=False, na=False)
     )
 
-    return df.drop(columns=["join_key"])
+    return df
 
 
 def clean_iemop(df_raw: pd.DataFrame, gc=None) -> pd.DataFrame:
@@ -363,9 +373,9 @@ def clean_iemop(df_raw: pd.DataFrame, gc=None) -> pd.DataFrame:
         return df_raw
 
     df = df_raw.copy()
-    df.columns = df.columns.str.lower()
+    df.columns = [str(c).strip().lower() for c in df.columns]
 
-    features = [
+    required = [
         "time_interval",
         "region_name",
         "commodity_type",
@@ -373,13 +383,14 @@ def clean_iemop(df_raw: pd.DataFrame, gc=None) -> pd.DataFrame:
         "marginal_price",
         "resource_name",
     ]
-    missing = [c for c in features if c not in df.columns]
+    missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"Missing expected columns in IEMOP data: {missing}")
 
-    df = df[features]
+    df = df[required].copy()
 
     df["time_interval"] = parse_time_interval(df["time_interval"])
+    df["marginal_price"] = pd.to_numeric(df["marginal_price"], errors="coerce")
 
     reserve_map = {
         "Dr": "Dispatchable",
@@ -398,25 +409,8 @@ def clean_iemop(df_raw: pd.DataFrame, gc=None) -> pd.DataFrame:
     }
     df["region_name"] = df["region_name"].map(region_map).fillna(df["region_name"])
 
-    if gc is not None:
-        df_ref = load_reference_mapping(gc)
-        df = enrich_resources(df, df_ref)
-    else:
-        df["raw_resource_name"] = df["resource_name"].astype(str).str.strip()
-        df["plant_name"] = df["raw_resource_name"]
-        df["fuel_type"] = "Unknown"
-        df["asset_kind"] = df.apply(
-            lambda r: infer_asset_kind(
-                raw_resource_name=r.get("raw_resource_name"),
-                resource_type=r.get("resource_type"),
-                fuel_type="Unknown",
-            ),
-            axis=1,
-        )
-        df["is_battery"] = (
-            df["asset_kind"].astype(str).str.lower().eq("battery")
-            | df["raw_resource_name"].astype(str).str.contains("_BAT", case=False, na=False)
-        )
+    df_ref = safe_load_reference_mapping(gc) if gc is not None else None
+    df = enrich_resources(df, df_ref)
 
     df = df.dropna(subset=["time_interval", "raw_resource_name", "commodity_type", "marginal_price"])
     df = df.drop_duplicates(subset=["time_interval", "raw_resource_name", "commodity_type"])
@@ -432,17 +426,24 @@ def clean_iemop(df_raw: pd.DataFrame, gc=None) -> pd.DataFrame:
 def fetch_incremental(last_time_str: Optional[str]):
     if last_time_str:
         last_dt = pd.to_datetime(last_time_str, errors="coerce")
-        if pd.isna(last_dt):
-            last_time_str = None
-        else:
+        if not pd.isna(last_dt):
             start_date = (last_dt - pd.Timedelta(days=2)).strftime("%Y-%m-%d")
             end_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
             try:
                 return fetch_iemop_data(start_date=start_date, end_date=end_date, verbose=False)
             except TypeError:
-                return fetch_iemop_data(max_days=7, missing_limit=10, verbose=False)
+                pass
 
-    return fetch_iemop_data(max_days=7, missing_limit=10, verbose=False)
+            try:
+                return fetch_iemop_data(start_date=start_date, end_date=end_date)
+            except TypeError:
+                pass
+
+    try:
+        return fetch_iemop_data(max_days=7, missing_limit=10, verbose=False)
+    except TypeError:
+        return fetch_iemop_data()
 
 
 def append_rows_chunked(ws, rows, chunk_size=500):
@@ -465,6 +466,12 @@ def main():
     last_time_str = meta.get("max_time_interval", "").strip() or None
 
     df_raw = fetch_incremental(last_time_str)
+
+    if df_raw is None or len(df_raw) == 0:
+        update_last_updated_and_max_time(sh, max_time_interval_str=last_time_str)
+        print("No data returned from fetch_iemop_data().")
+        return
+
     df_clean = clean_iemop(df_raw, gc=gc)
 
     if last_time_str:
@@ -477,17 +484,16 @@ def main():
         print("No new rows to append.")
         return
 
-    MAX_APPEND = 15000
-    if len(df_clean) > MAX_APPEND:
-        df_clean = df_clean.tail(MAX_APPEND).copy()
-        print(f"Warning: limiting append to the newest {MAX_APPEND} rows to prevent sheet overflow.")
+    max_append = 15000
+    if len(df_clean) > max_append:
+        df_clean = df_clean.tail(max_append).copy()
+        print(f"Warning: limiting append to newest {max_append} rows.")
 
     df_clean["time_interval"] = df_clean["time_interval"].dt.strftime("%Y-%m-%d %H:%M:%S")
 
-    rows_to_append = [
-        [r.get(col, "") for col in headers]
-        for _, r in df_clean.iterrows()
-    ]
+    rows_to_append = []
+    for _, row in df_clean.iterrows():
+        rows_to_append.append([row.get(col, "") for col in headers])
 
     appended = append_rows_chunked(ws_data, rows_to_append, chunk_size=500)
 
@@ -496,8 +502,8 @@ def main():
 
     print(
         f"Fetched rows: {len(df_raw):,} | "
-        f"Clean new rows: {len(df_clean):,} | "
-        f"Appended: {appended:,}"
+        f"Clean rows: {len(df_clean):,} | "
+        f"Appended rows: {appended:,}"
     )
 
 
