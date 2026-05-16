@@ -1,14 +1,11 @@
 """
 pipeline_to_sheets.py
 
-Robust IEMOP -> Google Sheets pipeline
-
-What this version fixes:
-- appends based on actual existing rows in the data tab, not only metadata
-- still updates metadata, but metadata no longer blocks appends
-- supports human-readable labels via reference sheet
-- adds fuel_type and asset_kind
-- preserves raw_resource_name for uniqueness
+IEMOP -> Google Sheets pipeline
+- keeps the original working flow from the repo
+- adds resource transformation safely and separately
+- appends based on actual existing rows in the data tab
+- metadata is updated after append logic, not instead of it
 """
 
 import os
@@ -38,10 +35,10 @@ DATA_HEADERS = [
     "commodity_type",
     "resource_type",
     "raw_resource_name",
-    "resource_name",   # human-readable display label
+    "resource_name",
     "plant_name",
     "fuel_type",
-    "asset_kind",      # unit / generator / battery
+    "asset_kind",
     "marginal_price",
     "is_battery",
     "source",
@@ -85,7 +82,6 @@ def get_metadata_map(ws_meta):
             v = str(r[1]).strip()
             if k:
                 meta[k] = v
-
     return meta
 
 
@@ -122,7 +118,7 @@ def update_last_updated_and_max_time(sh, max_time_interval_str=None):
         print(f"Updated max_time_interval = {max_time_interval_str}")
 
 
-def sync_data_headers(ws_data):
+def ensure_data_headers(ws_data):
     current = [str(x).strip() for x in ws_data.row_values(1)]
 
     if not current or all(x == "" for x in current):
@@ -251,6 +247,7 @@ def load_reference_mapping(gc) -> pd.DataFrame:
         "Fuel",
         "fuel_type",
         "fuel type",
+        "fuel",
         "technology",
     ])
     kind_col = find_column(df_ref, [
@@ -299,45 +296,16 @@ def safe_load_reference_mapping(gc) -> Optional[pd.DataFrame]:
         return None
 
 
-def enrich_resources(df: pd.DataFrame, df_ref: Optional[pd.DataFrame]) -> pd.DataFrame:
-    df = df.copy()
-    df["raw_resource_name"] = df["resource_name"].astype(str).str.strip()
-
-    if df_ref is not None and not df_ref.empty:
-        df["join_key"] = df["raw_resource_name"].map(normalize_key)
-        df = df.merge(df_ref, on="join_key", how="left")
-        df = df.drop(columns=["join_key"])
-    else:
-        df["plant_name"] = pd.NA
-        df["fuel_type"] = pd.NA
-        df["asset_kind"] = pd.NA
-
-    df["plant_name"] = df["plant_name"].replace("", pd.NA).fillna(df["raw_resource_name"])
-    df["fuel_type"] = df["fuel_type"].replace("", pd.NA).fillna("Unknown")
-
-    df["asset_kind"] = df.apply(
-        lambda r: infer_asset_kind(
-            raw_resource_name=r.get("raw_resource_name"),
-            resource_type=r.get("resource_type"),
-            fuel_type=r.get("fuel_type"),
-            existing_kind=r.get("asset_kind"),
-        ),
-        axis=1,
-    )
-
-    df["resource_name"] = df["plant_name"]
-    df["is_battery"] = (
-        df["asset_kind"].astype(str).str.lower().eq("battery")
-        | df["fuel_type"].astype(str).str.contains("battery|bess", case=False, na=False)
-        | df["raw_resource_name"].astype(str).str.contains("_BAT", case=False, na=False)
-    )
-
-    return df
-
-
-def clean_iemop(df_raw: pd.DataFrame, gc=None) -> pd.DataFrame:
+def clean_iemop(df_raw: pd.DataFrame) -> pd.DataFrame:
     if df_raw is None or df_raw.empty:
-        return pd.DataFrame(columns=DATA_HEADERS)
+        return pd.DataFrame(columns=[
+            "time_interval",
+            "region_name",
+            "commodity_type",
+            "resource_type",
+            "resource_name",
+            "marginal_price",
+        ])
 
     df = df_raw.copy()
     df.columns = [str(c).strip().lower() for c in df.columns]
@@ -355,6 +323,7 @@ def clean_iemop(df_raw: pd.DataFrame, gc=None) -> pd.DataFrame:
         raise ValueError(f"Missing expected columns in IEMOP data: {missing}")
 
     df = df[required].copy()
+
     df["time_interval"] = parse_time_interval(df["time_interval"])
 
     df["marginal_price"] = (
@@ -382,12 +351,49 @@ def clean_iemop(df_raw: pd.DataFrame, gc=None) -> pd.DataFrame:
     }
     df["region_name"] = df["region_name"].map(region_map).fillna(df["region_name"])
 
-    df_ref = safe_load_reference_mapping(gc) if gc is not None else None
-    df = enrich_resources(df, df_ref)
-
-    df = df.dropna(subset=["time_interval", "raw_resource_name", "commodity_type", "marginal_price"])
-    df = df.drop_duplicates(subset=["time_interval", "raw_resource_name", "commodity_type"])
+    df = df.dropna(subset=["time_interval", "resource_name", "commodity_type", "marginal_price"])
+    df = df.drop_duplicates(subset=["time_interval", "resource_name", "commodity_type"])
     df = df.sort_values(by=["time_interval", "region_name"]).reset_index(drop=True)
+
+    return df
+
+
+def enrich_iemop(df_clean: pd.DataFrame, gc) -> pd.DataFrame:
+    if df_clean.empty:
+        return pd.DataFrame(columns=DATA_HEADERS)
+
+    df = df_clean.copy()
+    df["raw_resource_name"] = df["resource_name"].astype(str).str.strip()
+
+    df_ref = safe_load_reference_mapping(gc)
+
+    if df_ref is not None and not df_ref.empty:
+        df["join_key"] = df["raw_resource_name"].map(normalize_key)
+        df = df.merge(df_ref, on="join_key", how="left")
+        df = df.drop(columns=["join_key"])
+    else:
+        df["plant_name"] = pd.NA
+        df["fuel_type"] = pd.NA
+        df["asset_kind"] = pd.NA
+
+    df["plant_name"] = df["plant_name"].replace("", pd.NA).fillna(df["raw_resource_name"])
+    df["fuel_type"] = df["fuel_type"].replace("", pd.NA).fillna("Unknown")
+    df["asset_kind"] = df.apply(
+        lambda r: infer_asset_kind(
+            raw_resource_name=r.get("raw_resource_name"),
+            resource_type=r.get("resource_type"),
+            fuel_type=r.get("fuel_type"),
+            existing_kind=r.get("asset_kind"),
+        ),
+        axis=1,
+    )
+
+    df["resource_name"] = df["plant_name"]
+    df["is_battery"] = (
+        df["asset_kind"].astype(str).str.lower().eq("battery")
+        | df["fuel_type"].astype(str).str.contains("battery|bess", case=False, na=False)
+        | df["raw_resource_name"].astype(str).str.contains("_BAT", case=False, na=False)
+    )
 
     df["source"] = "IEMOP"
     df["source_url"] = "https://www.iemop.ph/market-data/rtd-reserve-market-clearing-price/"
@@ -397,8 +403,6 @@ def clean_iemop(df_raw: pd.DataFrame, gc=None) -> pd.DataFrame:
 
 
 def fetch_recent_window():
-    # Fetch a rolling 14-day window every run.
-    # Deduping against the actual data tab prevents re-appends.
     end_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     start_date = (datetime.now(timezone.utc) - timedelta(days=14)).strftime("%Y-%m-%d")
 
@@ -440,7 +444,6 @@ def build_existing_keys(ws_data):
         if raw_idx is not None and raw_idx < len(row):
             raw_val = row[raw_idx].strip()
 
-        # backward compatibility for old rows that only had resource_name
         if not raw_val and name_idx is not None and name_idx < len(row):
             raw_val = row[name_idx].strip()
 
@@ -464,8 +467,7 @@ def main():
     ws_data = sh.worksheet("data")
     ws_meta = sh.worksheet("metadata")
 
-    headers = sync_data_headers(ws_data)
-
+    headers = ensure_data_headers(ws_data)
     meta = get_metadata_map(ws_meta)
     old_max_time = meta.get("max_time_interval", "").strip() or None
     print("Existing metadata max_time_interval:", old_max_time)
@@ -478,34 +480,42 @@ def main():
 
     print(f"Fetched raw rows: {len(df_raw):,}")
 
-    df_clean = clean_iemop(df_raw, gc=gc)
+    df_clean = clean_iemop(df_raw)
+    print(f"Rows after base cleaning: {len(df_clean):,}")
+
     if df_clean.empty:
         update_last_updated_and_max_time(sh, max_time_interval_str=old_max_time)
-        print("No rows remained after cleaning.")
+        print("No rows remained after base cleaning.")
         return
 
-    print(f"Clean rows available: {len(df_clean):,}")
+    df_final = enrich_iemop(df_clean, gc)
+    print(f"Rows after enrichment: {len(df_final):,}")
+
+    if df_final.empty:
+        update_last_updated_and_max_time(sh, max_time_interval_str=old_max_time)
+        print("No rows remained after enrichment.")
+        return
 
     existing_keys = build_existing_keys(ws_data)
-    print(f"Existing keys already in data tab: {len(existing_keys):,}")
+    print(f"Existing keys in data tab: {len(existing_keys):,}")
 
-    df_clean["time_interval"] = df_clean["time_interval"].dt.strftime("%Y-%m-%d %H:%M:%S")
-    df_clean["append_key"] = list(
+    df_final["time_interval"] = pd.to_datetime(df_final["time_interval"], errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S")
+    df_final["append_key"] = list(
         zip(
-            df_clean["time_interval"],
-            df_clean["raw_resource_name"].astype(str),
-            df_clean["commodity_type"].astype(str),
+            df_final["time_interval"],
+            df_final["raw_resource_name"].astype(str),
+            df_final["commodity_type"].astype(str),
         )
     )
 
-    df_to_append = df_clean.loc[~df_clean["append_key"].isin(existing_keys)].copy()
+    df_to_append = df_final.loc[~df_final["append_key"].isin(existing_keys)].copy()
     print(f"Rows to append after dedupe: {len(df_to_append):,}")
 
-    latest_seen_time = df_clean["time_interval"].max()
+    latest_seen_time = df_final["time_interval"].max()
 
     if df_to_append.empty:
         update_last_updated_and_max_time(sh, max_time_interval_str=latest_seen_time)
-        print("No new rows to append after checking data tab.")
+        print("No new rows to append after checking existing data tab.")
         return
 
     rows_to_append = []
@@ -521,6 +531,7 @@ def main():
     print(
         f"Fetched rows: {len(df_raw):,} | "
         f"Clean rows: {len(df_clean):,} | "
+        f"Final rows: {len(df_final):,} | "
         f"Appended rows: {appended:,}"
     )
 
