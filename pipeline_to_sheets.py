@@ -136,24 +136,19 @@ def update_last_updated_and_max_time(sh, max_time_interval_str=None):
 
 
 def ensure_data_headers(ws_data):
+    expected = DATA_HEADERS[:]
     current = [str(x).strip() for x in ws_data.row_values(1)]
 
-    if not current or all(x == "" for x in current):
-        ws_data.update(values=[DATA_HEADERS], range_name="A1")
-        return DATA_HEADERS
+    # Always enforce exact header order
+    ws_data.update(values=[expected], range_name="A1")
+    print("Set data headers to exact schema.")
 
-    existing_headers = [x for x in current if x != ""]
-    final_headers = existing_headers.copy()
+    # Remove extra trailing columns from older versions
+    if len(current) > len(expected):
+        ws_data.delete_columns(len(expected) + 1, len(current))
+        print(f"Removed {len(current) - len(expected)} obsolete columns.")
 
-    for col in DATA_HEADERS:
-        if col not in final_headers:
-            final_headers.append(col)
-
-    if final_headers != existing_headers:
-        ws_data.update(values=[final_headers], range_name="A1")
-        print("Updated data headers by appending missing columns.")
-
-    return final_headers
+    return expected
 
 
 def parse_time_interval(series: pd.Series) -> pd.Series:
