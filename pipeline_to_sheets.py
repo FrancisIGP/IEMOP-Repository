@@ -1,245 +1,290 @@
 """
-pipeline_to_sheets.py
+download_iemop.py
 
-Automated pipeline:
-1) Fetch IEMOP reserve market data using download_iemop.fetch_iemop_data()
-2) Clean/standardize
-3) Append only NEW rows to Google Sheets (based on max_time_interval)
-4) Update metadata timestamps (UTC + PHT) and max_time_interval
+Hardened IEMOP Reserve Market Clearing Price (RTD) downloader.
 
-Environment variables (set in GitHub Actions):
-- GSHEET_ID: Google Sheet ID
-- GCP_SA_JSON: Service account JSON (as a single JSON string)
+What this version improves:
+- Explicit logging for base-path detection and fallback behavior
+- Stronger validation that the downloaded file is actually a usable CSV
+- Safer exception handling with optional verbose logs
+- Compatible with pipeline_to_sheets.py calls:
+    fetch_iemop_data(start_date=..., end_date=..., max_days=..., missing_limit=..., verbose=...)
+
+Running this file directly saves iemop_combined.csv for local testing.
 """
 
-import os
-import json
-from datetime import datetime, timezone, timedelta
+import base64
+import io
+import re
+from datetime import datetime, timedelta
+from typing import Optional, List
+
 import pandas as pd
-import gspread
-from google.oauth2.service_account import Credentials
+import requests
 
-from download_iemop import fetch_iemop_data
+BASE_URL = "https://www.iemop.ph/market-data/rtd-reserve-market-clearing-price/"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; IEMOP-Downloader/1.0)"
+}
 
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
+# The page currently does not expose md_file dynamically in a reliable way,
+# so we still keep known candidate directories and test them directly.
+BASE_PATH_CANDIDATES = [
+    "/var/www/html/wp-content/uploads/downloads/data/MPRESERVE/",
 ]
 
-DATA_HEADERS = [
+EXPECTED_COLUMNS = {
     "time_interval",
     "region_name",
     "commodity_type",
     "resource_type",
-    "resource_name",
     "marginal_price",
-    "is_battery",
-    "source",
-    "source_url",
-    "ingested_at_utc",
-]
+    "resource_name",
+}
 
 
-def connect_sheet():
-    sheet_id = os.environ["GSHEET_ID"]
-    sa_info = json.loads(os.environ["GCP_SA_JSON"])
-    creds = Credentials.from_service_account_info(sa_info, scopes=SCOPES)
-    gc = gspread.authorize(creds)
-    return gc.open_by_key(sheet_id)
+def _log(msg: str, verbose: bool) -> None:
+    if verbose:
+        print(msg)
 
 
-def get_metadata_map(ws_meta):
+def _safe_get(url: str, timeout: int = 20) -> requests.Response:
+    res = requests.get(url, headers=HEADERS, timeout=timeout)
+    res.raise_for_status()
+    return res
+
+
+def _try_extract_md_file_path(page_source: str) -> Optional[str]:
     """
-    Reads metadata tab where Column A = field, Column B = value
-    Returns dict like {"last_updated_utc": "...", "max_time_interval": "..."}
+    Try to extract a base path from an md_file query parameter in page HTML.
+    Returns the directory path if found, else None.
     """
-    vals = ws_meta.get_all_values()
-    meta = {}
-    for r in vals[1:] if vals and vals[0] and vals[0][0].strip().lower() == "field" else vals:
-        if len(r) >= 2:
-            k = r[0].strip()
-            v = r[1].strip()
-            if k:
-                meta[k] = v
-    return meta
+    match = re.search(r"md_file=([A-Za-z0-9+/=]+)", page_source)
+    if not match:
+        return None
+
+    try:
+        decoded_path = base64.b64decode(match.group(1)).decode()
+        return decoded_path.rsplit("/", 1)[0] + "/"
+    except Exception:
+        return None
 
 
-def upsert_metadata(ws_meta, label, value):
-    colA = [x.strip() for x in ws_meta.col_values(1)]
-    if label in colA:
-        row_idx = colA.index(label) + 1
-        ws_meta.update(range_name=f"B{row_idx}", values=[[value]])
-    else:
-        next_row = len(colA) + 1
-        ws_meta.update(range_name=f"A{next_row}", values=[[label]])
-        ws_meta.update(range_name=f"B{next_row}", values=[[value]])
+def _looks_like_csv(content: bytes) -> bool:
+    if not content or len(content) < 50:
+        return False
+
+    head = content[:500].decode("utf-8", errors="ignore").lower()
+
+    # Reject obvious HTML/error pages
+    if "<html" in head or "<!doctype" in head or "<body" in head:
+        return False
+
+    # Must at least look comma-separated
+    return "," in head
 
 
-def update_last_updated_and_max_time(sh, max_time_interval_str=None):
-    ws_meta = sh.worksheet("metadata")
+def _parse_csv_bytes(content: bytes) -> Optional[pd.DataFrame]:
+    try:
+        df = pd.read_csv(io.BytesIO(content))
+    except Exception:
+        return None
 
-    utc_ts = datetime.now(timezone.utc)
-    pht_tz = timezone(timedelta(hours=8))
-    pht_ts = utc_ts.astimezone(pht_tz)
+    if df is None or df.empty:
+        return None
 
-    utc_str = utc_ts.strftime("%Y-%m-%d %H:%M:%S")
-    pht_str = pht_ts.strftime("%Y-%m-%d %H:%M:%S")
+    normalized_cols = {str(c).strip().lower() for c in df.columns}
+    if not EXPECTED_COLUMNS.issubset(normalized_cols):
+        return None
 
-    upsert_metadata(ws_meta, "last_updated_utc", utc_str)
-    upsert_metadata(ws_meta, "last_updated_pht", pht_str)
-
-    if max_time_interval_str:
-        upsert_metadata(ws_meta, "max_time_interval", max_time_interval_str)
-
-    print(f"Updated last_updated_utc = {utc_str}")
-    print(f"Updated last_updated_pht = {pht_str}")
-    if max_time_interval_str:
-        print(f"Updated max_time_interval = {max_time_interval_str}")
-
-
-def ensure_data_headers(ws_data):
-    current = ws_data.row_values(1)
-    if not current or all(x.strip() == "" for x in current):
-        ws_data.append_row(DATA_HEADERS, value_input_option="USER_ENTERED")
-        return DATA_HEADERS
-    return current
-
-
-def parse_time_interval(series: pd.Series) -> pd.Series:
-    """
-    Avoid pandas warning by trying strict known format first,
-    then fallback to general parsing for any remaining.
-    """
-    s = series.astype(str).str.strip()
-
-    # Try strict format (common)
-    dt1 = pd.to_datetime(s, errors="coerce", format="%Y-%m-%d %H:%M:%S")
-    # Fallback parse for entries that failed
-    mask = dt1.isna() & s.ne("")
-    if mask.any():
-        dt2 = pd.to_datetime(s[mask], errors="coerce")
-        dt1.loc[mask] = dt2
-
-    return dt1
-
-
-def clean_iemop(df_raw: pd.DataFrame) -> pd.DataFrame:
-    if df_raw.empty:
-        return df_raw
-
-    df = df_raw.copy()
-    df.columns = df.columns.str.lower()
-
-    features = ["time_interval", "region_name", "commodity_type", "resource_type", "marginal_price", "resource_name"]
-    missing = [c for c in features if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing expected columns in IEMOP data: {missing}")
-
-    df = df[features]
-
-    # Parse timestamps safely
-    df["time_interval"] = parse_time_interval(df["time_interval"])
-
-    reserve_map = {"Dr": "Dispatchable", "Rd": "Regulating Down", "Ru": "Regulating Up", "Fr": "Contingency"}
-    df["commodity_type"] = df["commodity_type"].map(reserve_map).fillna(df["commodity_type"])
-    df["commodity_type"] = df["commodity_type"].astype(str).str.title()
-    df["resource_type"] = df["resource_type"].astype(str).str.title()
-
-    region_map = {"CLUZ": "Luzon", "CVIS": "Visayas", "CMIN": "Mindanao"}
-    df["region_name"] = df["region_name"].map(region_map).fillna(df["region_name"])
-
-    df["is_battery"] = df["resource_name"].astype(str).str.contains("_BAT", case=False, na=False)
-
-    df = df.dropna(subset=["time_interval", "resource_name", "commodity_type", "marginal_price"])
-    df = df.drop_duplicates(subset=["time_interval", "resource_name", "commodity_type"])
-    df = df.sort_values(by=["time_interval", "region_name"]).reset_index(drop=True)
-
-    df["source"] = "IEMOP"
-    df["source_url"] = "https://www.iemop.ph/market-data/rtd-reserve-market-clearing-price/"
-    df["ingested_at_utc"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-
-    df = df[DATA_HEADERS]
     return df
 
 
-def fetch_incremental(last_time_str: str | None):
+def _download_csv_from_base_path(date_obj: datetime, base_path: str, verbose: bool = False) -> Optional[pd.DataFrame]:
     """
-    Fetch only recent data if we already have a max_time_interval.
-    Falls back safely if fetch_iemop_data signature doesn't support start/end.
+    Download one day's CSV using a specific base path.
+    Returns DataFrame if valid, else None.
     """
-    if last_time_str:
-        last_dt = pd.to_datetime(last_time_str, errors="coerce")
-        if pd.isna(last_dt):
-            last_time_str = None
+    date_str = date_obj.strftime("%Y%m%d")
+    server_filename = f"{base_path}MP_RESERVE_{date_str}.csv"
+    encoded = base64.b64encode(server_filename.encode()).decode()
+    url = f"{BASE_URL}?md_file={encoded}"
+
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=20)
+    except Exception as e:
+        _log(f"[ERROR] Request failed for {date_str}: {e}", verbose)
+        return None
+
+    if res.status_code != 200:
+        _log(f"[MISS] {date_str}: HTTP {res.status_code}", verbose)
+        return None
+
+    if not _looks_like_csv(res.content):
+        _log(f"[MISS] {date_str}: response is not valid CSV-like content", verbose)
+        return None
+
+    df = _parse_csv_bytes(res.content)
+    if df is None:
+        _log(f"[MISS] {date_str}: CSV parsed but expected columns were not found", verbose)
+        return None
+
+    _log(f"[OK] {date_str}: downloaded via {base_path}", verbose)
+    return df
+
+
+def _detect_base_path(verbose: bool = False) -> str:
+    """
+    Try to detect the real base path from the page.
+    If that fails, test known candidate paths against a recent date and use the first one that works.
+    """
+    _log("[INFO] Detecting IEMOP base path...", verbose)
+
+    try:
+        page_source = _safe_get(BASE_URL).text
+        detected = _try_extract_md_file_path(page_source)
+        if detected:
+            _log(f"[INFO] Found md_file-derived base path: {detected}", verbose)
+
+            # Validate detected path using recent dates
+            today = datetime.today()
+            for offset in range(0, 7):
+                test_date = today - timedelta(days=offset)
+                test_df = _download_csv_from_base_path(test_date, detected, verbose=False)
+                if test_df is not None:
+                    _log(f"[INFO] md_file-derived path validated using {test_date.strftime('%Y-%m-%d')}", verbose)
+                    return detected
+
+            _log("[WARN] md_file-derived path was found but could not be validated", verbose)
         else:
-            # 2-day overlap buffer
-            start_date = (last_dt - pd.Timedelta(days=2)).strftime("%Y-%m-%d")
-            end_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            try:
-                return fetch_iemop_data(start_date=start_date, end_date=end_date, verbose=False)
-            except TypeError:
-                # If your fetch_iemop_data doesn't accept start_date/end_date
-                return fetch_iemop_data(max_days=7, missing_limit=10, verbose=False)
+            _log("[WARN] No md_file parameter found on page HTML", verbose)
 
-    # First run or bad metadata
-    return fetch_iemop_data(max_days=7, missing_limit=10, verbose=False)
+    except Exception as e:
+        _log(f"[WARN] Failed to inspect IEMOP page for md_file: {e}", verbose)
+
+    _log("[INFO] Testing fallback base-path candidates...", verbose)
+
+    today = datetime.today()
+    for candidate in BASE_PATH_CANDIDATES:
+        for offset in range(0, 10):
+            test_date = today - timedelta(days=offset)
+            test_df = _download_csv_from_base_path(test_date, candidate, verbose=False)
+            if test_df is not None:
+                _log(
+                    f"[INFO] Using fallback base path: {candidate} "
+                    f"(validated with {test_date.strftime('%Y-%m-%d')})",
+                    verbose,
+                )
+                return candidate
+
+    raise RuntimeError(
+        "Could not validate any IEMOP base path. "
+        "The source path may have changed, or the site may be unavailable."
+    )
 
 
-def append_rows_chunked(ws, rows, chunk_size=500):
+def _fetch_one_day_csv(date_obj: datetime, base_path: str, verbose: bool = False) -> Optional[pd.DataFrame]:
     """
-    Append in chunks to avoid request size limits.
+    Wrapper used by the main fetch loop.
     """
-    total = 0
-    for i in range(0, len(rows), chunk_size):
-        batch = rows[i:i + chunk_size]
-        ws.append_rows(batch, value_input_option="USER_ENTERED")
-        total += len(batch)
-    return total
+    return _download_csv_from_base_path(date_obj, base_path, verbose=verbose)
 
 
-def main():
-    sh = connect_sheet()
-    ws_data = sh.worksheet("data")
-    ws_meta = sh.worksheet("metadata")
+def fetch_iemop_data(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    max_days: int = 30,
+    missing_limit: int = 10,
+    verbose: bool = False,
+) -> pd.DataFrame:
+    """
+    Fetch IEMOP RTD reserve market CSVs and return a combined DataFrame.
 
-    headers = ensure_data_headers(ws_data)
+    If start_date/end_date are provided (YYYY-MM-DD), the function attempts that exact range.
+    If not provided, it scans backward from today up to max_days and stops early if it hits
+    missing_limit consecutive missing days.
 
-    meta = get_metadata_map(ws_meta)
-    last_time_str = meta.get("max_time_interval", "").strip() or None
+    Parameters
+    - start_date: "YYYY-MM-DD" (optional)
+    - end_date: "YYYY-MM-DD" (optional)
+    - max_days: how far back to scan when start/end not provided
+    - missing_limit: stop after N consecutive missing days for open-ended scan
+    - verbose: print progress logs
 
-    df_raw = fetch_incremental(last_time_str)
-    df_clean = clean_iemop(df_raw)
+    Returns
+    - pandas DataFrame (possibly empty)
+    """
+    base_path = _detect_base_path(verbose=verbose)
 
-    # Filter strictly newer than max_time_interval to avoid re-appending history
-    if last_time_str:
-        last_dt = pd.to_datetime(last_time_str, errors="coerce")
-        if not pd.isna(last_dt):
-            df_clean = df_clean[df_clean["time_interval"] > last_dt].copy()
+    if end_date:
+        current_date = datetime.strptime(end_date, "%Y-%m-%d")
+    else:
+        current_date = datetime.today()
 
-    if df_clean.empty:
-        update_last_updated_and_max_time(sh, max_time_interval_str=last_time_str)
-        print("No new rows to append.")
-        return
+    if start_date:
+        earliest_date = datetime.strptime(start_date, "%Y-%m-%d")
+        use_fixed_range = True
+    else:
+        earliest_date = current_date - timedelta(days=max_days - 1)
+        use_fixed_range = False
 
-    # Safety cap to prevent huge accidental appends
-    # Keeps the newest rows only if something goes wrong again.
-    MAX_APPEND = 15000
-    if len(df_clean) > MAX_APPEND:
-        df_clean = df_clean.tail(MAX_APPEND).copy()
-        print(f"Warning: limiting append to the newest {MAX_APPEND} rows to prevent sheet overflow.")
+    all_dfs: List[pd.DataFrame] = []
+    missing_count = 0
+    d = current_date
 
-    # Convert to sheet row format
-    df_clean["time_interval"] = df_clean["time_interval"].dt.strftime("%Y-%m-%d %H:%M:%S")
-    rows_to_append = [[r.get(col, "") for col in headers] for _, r in df_clean.iterrows()]
+    _log(
+        f"[INFO] Fetching IEMOP data from {earliest_date.strftime('%Y-%m-%d')} "
+        f"to {current_date.strftime('%Y-%m-%d')}",
+        verbose,
+    )
 
-    appended = append_rows_chunked(ws_data, rows_to_append, chunk_size=500)
+    while d >= earliest_date:
+        df_day = _fetch_one_day_csv(d, base_path, verbose=verbose)
 
-    # Update metadata max_time_interval to the newest time_interval appended
-    new_max_time = df_clean["time_interval"].max()
-    update_last_updated_and_max_time(sh, max_time_interval_str=new_max_time)
+        if df_day is not None and not df_day.empty:
+            all_dfs.append(df_day)
+            missing_count = 0
+            _log(f"[FOUND] MP_RESERVE_{d.strftime('%Y%m%d')}.csv", verbose)
+        else:
+            missing_count += 1
+            _log(f"[MISSING] MP_RESERVE_{d.strftime('%Y%m%d')}.csv", verbose)
 
-    print(f"Fetched rows: {len(df_raw):,} | Clean new rows: {len(df_clean):,} | Appended: {appended:,}")
+            if (not use_fixed_range) and (missing_count >= missing_limit):
+                _log(
+                    f"[INFO] Stopping early after {missing_limit} consecutive missing days.",
+                    verbose,
+                )
+                break
+
+        d -= timedelta(days=1)
+
+    if not all_dfs:
+        _log("[INFO] No IEMOP files found for the requested period.", verbose)
+        return pd.DataFrame()
+
+    # Reverse so output runs oldest -> latest
+    combined = pd.concat(reversed(all_dfs), ignore_index=True)
+
+    # Final light cleanup
+    combined.columns = [str(c).strip().lower() for c in combined.columns]
+
+    # Standardize time parsing if present
+    if "time_interval" in combined.columns:
+        combined["time_interval"] = pd.to_datetime(combined["time_interval"], errors="coerce")
+
+    _log(f"[INFO] Combined rows: {len(combined):,}", verbose)
+    return combined
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        df = fetch_iemop_data(max_days=30, missing_limit=10, verbose=True)
+
+        if df.empty:
+            print("No data found.")
+        else:
+            df.to_csv("iemop_combined.csv", index=False)
+            print(f"\nSaved iemop_combined.csv with {len(df):,} rows.")
+    except Exception as e:
+        print(f"Downloader failed: {e}")
+        raise
